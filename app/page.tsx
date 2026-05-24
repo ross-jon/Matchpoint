@@ -124,9 +124,14 @@ export default function MatchPointApp() {
               case 'matches':
                 return <MatchesScreen />
               case 'match-detail':
+                if (!selectedMatchId) {
+                  // Guard: if ID is missing, bounce back to feed to prevent empty-string Supabase query
+                  setActiveScreen('feed')
+                  return null
+                }
                 return (
-                 <MatchDetailScreen
-                   matchId={selectedMatchId ?? ''}
+                  <MatchDetailScreen
+                    matchId={selectedMatchId}
                     onBack={() => setActiveScreen('feed')}
                     onViewProfile={(id) => {
                       setSelectedPlayerId(id)

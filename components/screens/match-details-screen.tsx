@@ -45,8 +45,8 @@ export function MatchDetailScreen({ matchId, onBack, onViewProfile }: MatchDetai
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   useEffect(() => {
-    // Guard against missing matchId to prevent unnecessary API calls
-    if (!matchId) {
+    // Guard against missing or empty matchId to prevent bad Supabase queries
+    if (!matchId || matchId.trim() === '') {
       setLoading(false);
       return;
     }

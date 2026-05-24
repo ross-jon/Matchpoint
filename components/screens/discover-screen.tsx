@@ -144,33 +144,44 @@ export function DiscoverScreen({ onChallenge }: DiscoverScreenProps) {
 
   useEffect(() => {
     const loadDiscoveryData = async () => {
-      // 1. Pull current user meta data to calculate Elo offsets
-      const { data: { user } } = await supabase.auth.getUser()
-      
-      let currentUserId = ''
-      if (user) {
-        currentUserId = user.id
-        const { data: profile } = await supabase
+      try {
+        // 1. Pull current user meta data to calculate Elo offsets
+        const { data: authData, error: authError } = await supabase.auth.getUser()
+        const user = authData?.user
+        if (authError) {
+          console.error('Supabase auth error:', authError.message || authError)
+          return
+        }
+        let currentUserId = ''
+        if (user) {
+          currentUserId = user.id
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('elo_rating')
+            .eq('id', user.id)
+            .single()
+          if (profile) setCurrentUserElo(profile.elo_rating)
+        }
+
+        // 2. Query all opponent profile logs from the matrix database
+        const { data, error } = await supabase
           .from('profiles')
-          .select('elo_rating')
-          .eq('id', user.id)
-          .single()
-        if (profile) setCurrentUserElo(profile.elo_rating)
-      }
+          .select('id, name, avatar_url, elo_rating, wins, losses, bio, open_to_challenges, geographic_hubs')
+          .neq('id', currentUserId) // Filters yourself out of discovery list bounds
+          .order('name', { ascending: true })
 
-      // 2. Query all opponent profile logs from the matrix database
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('id, name, avatar_url, elo_rating, wins, losses, bio, open_to_challenges, geographic_hubs')
-        .neq('id', currentUserId) // Filters yourself out of discovery list bounds
-        .order('name', { ascending: true })
-
-      if (error) {
-        console.error('Error hydrating discovery directory lists:', error)
-      } else if (data) {
-        setPlayers(data as DiscoverPlayer[])
+        if (error) {
+          // Log a more descriptive error message and the raw error object
+          console.error('Error hydrating discovery directory lists:', error.message || error, JSON.stringify(error))
+          console.debug('Supabase error details:', error)
+        } else if (data) {
+          setPlayers(data as DiscoverPlayer[])
+        }
+      } catch (err) {
+        console.error('Unexpected error loading discovery data:', err)
+      } finally {
+        setLoading(false)
       }
-      setLoading(false)
     }
 
     loadDiscoveryData()
