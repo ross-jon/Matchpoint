@@ -62,7 +62,6 @@ export function TopNav({ activeScreen, onNavigate, unreadMessages, profile }: To
     if (error) {
       console.error('Error executing account sign out:', error)
     } else {
-      router.push('/login')
       router.refresh()
     }
   }
@@ -244,7 +243,6 @@ export function UserSidebar({ onNavigate, profile }: UserSidebarProps) {
 
   const handleSidebarSignOut = async () => {
     await supabase.auth.signOut()
-    router.push('/login')
     router.refresh()
   }
 

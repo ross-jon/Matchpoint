@@ -12,14 +12,16 @@ import { DiscoverScreen } from '@/components/screens/discover-screen'
 import { MessagesScreen } from '@/components/screens/messages-screen'
 import { ProfileScreen } from '@/components/screens/profile-screen'
 import { ChallengeSheet } from '@/components/challenge-sheet'
-import { conversations, matchChallenges, type Player } from '@/lib/data'
+import { matchChallenges, type Player } from '@/lib/data'
 
 export default function MatchPointApp() {
   const [activeScreen, setActiveScreen] = useState<Screen>('feed')
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null)
   const [user, setUser] = useState<any>(null)
+  const [authChecked, setAuthChecked] = useState(false)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null)
+  const [unreadMessages, setUnreadMessages] = useState(0)
   
   // Challenge sheet state
   const [challengeSheetOpen, setChallengeSheetOpen] = useState(false)
@@ -32,6 +34,7 @@ export default function MatchPointApp() {
       const { data } = await supabase.auth.getSession()
       if (isMounted) {
         setUser(data.session?.user ?? null)
+        setAuthChecked(true)
       }
     }
 
@@ -40,6 +43,7 @@ export default function MatchPointApp() {
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
       if (isMounted) {
         setUser(session?.user ?? null)
+        setAuthChecked(true)
       }
     })
 
@@ -49,8 +53,57 @@ export default function MatchPointApp() {
     }
   }, [])
 
-  // Calculate badge counts
-  const unreadMessages = conversations.reduce((sum, c) => sum + c.unreadCount, 0)
+  useEffect(() => {
+    let isMounted = true
+
+    const loadUnreadMessages = async (userId: string) => {
+      const messageCountResult = await supabase
+        .from('messages')
+        .select('id, conversations!inner(user_alpha, user_beta)', { count: 'exact', head: true })
+        .eq('is_read', false)
+        .neq('sender_id', userId)
+        .or(`user_alpha.eq.${userId},user_beta.eq.${userId}`, { referencedTable: 'conversations' })
+
+      if (messageCountResult.error) {
+        console.error('Error loading unread message counts:', JSON.stringify(messageCountResult.error))
+        if (isMounted) setUnreadMessages(0)
+        return
+      }
+
+      if (isMounted) {
+        setUnreadMessages(messageCountResult.count ?? 0)
+      }
+    }
+
+    if (!user?.id) {
+      setUnreadMessages(0)
+      return () => {
+        isMounted = false
+      }
+    }
+
+    const userId = user.id
+    loadUnreadMessages(userId)
+
+    const channel = supabase.channel(`unread-messages-${userId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        () => loadUnreadMessages(userId)
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'messages' },
+        () => loadUnreadMessages(userId)
+      )
+      .subscribe()
+
+    return () => {
+      isMounted = false
+      supabase.removeChannel(channel)
+    }
+  }, [user?.id])
+
   const notifications = 2 // System notifications
   const pendingChallenges = matchChallenges.filter(
     c => c.status === 'pending' && c.challengedId === 'current'
@@ -69,22 +122,61 @@ export default function MatchPointApp() {
     setActiveScreen('matches')
   }, [])
 
+  const handleAuthSuccess = useCallback(async () => {
+    const { data } = await supabase.auth.getSession()
+    setUser(data.session?.user ?? null)
+    setActiveScreen('feed')
+    setAuthChecked(true)
+  }, [])
+
   // Challenge handlers
   const handleOpenChallenge = useCallback((player: any) => {
     setSelectedPlayerForChallenge(player)
     setChallengeSheetOpen(true)
   }, [])
 
-  const handleSubmitChallenge = useCallback((data: {
+  const handleSubmitChallenge = useCallback(async (data: {
     playerId: string
-    date: string
-    time: string
-    location: string
-    message: string
+    scheduled_time: string
+    proposed_location: string
+    challenger_note: string
   }) => {
-    console.log('Challenge submitted:', data)
-    setActiveScreen('matches')
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      const { error } = await supabase.from('matches').insert({
+        home_player_id: user.id,
+        away_player_id: data.playerId,
+        status: 'pending',
+        scheduled_time: data.scheduled_time,
+        proposed_location: data.proposed_location,
+        challenger_note: data.challenger_note || null,
+      })
+
+      if (error) throw error
+
+      setChallengeSheetOpen(false)
+      setActiveScreen('matches')
+    } catch (err: any) {
+      console.error('Failed to submit challenge:', err.message)
+    }
   }, [])
+
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
+        <div className="text-center space-y-2">
+          <div className="h-10 w-10 rounded-full border-4 border-primary border-t-transparent animate-spin mx-auto" />
+          <p className="text-sm font-medium text-muted-foreground">Checking your authentication...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <LoginScreen onAuthSuccess={handleAuthSuccess} />
+  }
 
   return (
     <div className="min-h-screen bg-background">

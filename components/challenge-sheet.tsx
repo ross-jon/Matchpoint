@@ -43,10 +43,9 @@ interface ChallengeSheetProps {
   onOpenChange: (open: boolean) => void
   onSubmit: (data: {
     playerId: string
-    date: string
-    time: string
-    location: string
-    message: string
+    scheduled_time: string       // ISO timestamptz, ready for DB
+    proposed_location: string    // matches DB column name
+    challenger_note: string      // matches DB column name
   }) => void
 }
 
@@ -56,10 +55,23 @@ const timeSlots = [
   '6:00 PM', '7:00 PM', '8:00 PM', '9:00 PM'
 ]
 
+// Convert "7:00 AM" style slot + a date string into an ISO timestamptz
+function toISOTimestamp(date: string, timeSlot: string): string {
+  if (!date || !timeSlot) return new Date('2099-01-01T00:00:00').toISOString()
+  const [time, meridiem] = timeSlot.split(' ')
+  let [hours, minutes] = time.split(':').map(Number)
+  if (meridiem === 'PM' && hours !== 12) hours += 12
+  if (meridiem === 'AM' && hours === 12) hours = 0
+  const dt = new Date(`${date}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`)
+  return dt.toISOString()
+}
+
 export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: ChallengeSheetProps) {
   const [date, setDate] = useState('')
   const [time, setTime] = useState('')
   const [location, setLocation] = useState('')
+  const [customLocation, setCustomLocation] = useState('')
+  const [useCustomLocation, setUseCustomLocation] = useState(false)
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -69,27 +81,29 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
   const targetHubs = 'geographic_hubs' in player ? player.geographic_hubs : player.preferredHubs || []
 
   const handleSubmit = async () => {
-    if (!date || !time || !location) return
-    
+    const resolvedLocation = useCustomLocation ? customLocation.trim() : location
+
     setIsSubmitting(true)
-    
+
     onSubmit({
       playerId: player.id,
-      date,
-      time,
-      location,
-      message
+      scheduled_time: toISOTimestamp(date, time),       // ✅ ISO timestamptz for DB
+      proposed_location: resolvedLocation || 'TBD',     // ✅ falls back to TBD if not provided
+      challenger_note: message,                          // ✅ correct DB column name
     })
-    
+
     setDate('')
     setTime('')
     setLocation('')
+    setCustomLocation('')
+    setUseCustomLocation(false)
     setMessage('')
     setIsSubmitting(false)
     onOpenChange(false)
   }
 
-  const isValid = date && time && location
+  // Date is the only required field; location and time are optional
+  const isValid = !!date
 
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)
@@ -138,7 +152,7 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
           <div>
             <label className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
               <Calendar className="h-4 w-4 text-muted-foreground" />
-              Proposed Date
+              Proposed Date <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
             <Input
               type="date"
@@ -149,11 +163,11 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
             />
           </div>
 
-          {/* Proposed Time Input — Fixed: Removed Duplicate SelectTrigger */}
+          {/* Proposed Time Input */}
           <div>
             <label className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
               <Clock className="h-4 w-4 text-muted-foreground" />
-              Proposed Time
+              Proposed Time <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
             <Select value={time} onValueChange={setTime}>
               <SelectTrigger className="w-full border-border bg-background text-foreground">
@@ -169,35 +183,62 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
             </Select>
           </div>
 
-          {/* Court Hub Location Picker — Fixed: Removed Duplicate SelectTrigger */}
+          {/* Location Picker + Custom Location Toggle */}
           <div>
             <label className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
               <MapPin className="h-4 w-4 text-muted-foreground" />
-              Location
+              Location <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
-            <Select value={location} onValueChange={setLocation}>
-              <SelectTrigger className="w-full border-border bg-background text-foreground">
-                <SelectValue placeholder="Select a court hub" />
-              </SelectTrigger>
-              <SelectContent className="bg-card border-border text-foreground">
-                {sortedLocations.map(loc => (
-                  <SelectItem key={loc} value={loc} className="hover:bg-secondary focus:bg-secondary focus:text-foreground text-foreground cursor-pointer">
-                    <span className="flex items-center gap-2">
-                      {loc}
-                      {targetHubs.includes(loc) && (
-                        <span className="text-xs text-primary font-medium">(Their preferred)</span>
-                      )}
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {!useCustomLocation ? (
+              <>
+                <Select value={location} onValueChange={setLocation}>
+                  <SelectTrigger className="w-full border-border bg-background text-foreground">
+                    <SelectValue placeholder="Select a court hub" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-card border-border text-foreground">
+                    {sortedLocations.map(loc => (
+                      <SelectItem key={loc} value={loc} className="hover:bg-secondary focus:bg-secondary focus:text-foreground text-foreground cursor-pointer">
+                        <span className="flex items-center gap-2">
+                          {loc}
+                          {targetHubs.includes(loc) && (
+                            <span className="text-xs text-primary font-medium">(Their preferred)</span>
+                          )}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <button
+                  type="button"
+                  onClick={() => setUseCustomLocation(true)}
+                  className="mt-2 text-xs text-primary hover:underline"
+                >
+                  + Enter a custom location
+                </button>
+              </>
+            ) : (
+              <>
+                <Input
+                  value={customLocation}
+                  onChange={(e) => setCustomLocation(e.target.value)}
+                  placeholder="e.g. Liberty Park Court 3"
+                  className="w-full bg-background border-border text-foreground"
+                />
+                <button
+                  type="button"
+                  onClick={() => { setUseCustomLocation(false); setCustomLocation('') }}
+                  className="mt-2 text-xs text-primary hover:underline"
+                >
+                  ← Pick from court hubs instead
+                </button>
+              </>
+            )}
           </div>
 
           {/* Challenge Note Textbox */}
           <div>
             <label className="mb-2 block text-sm font-medium text-foreground">
-              Message (optional)
+              Message <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
             <Textarea
               value={message}
@@ -210,8 +251,8 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
 
         {/* Form Submission Action Row */}
         <div className="mt-8">
-          <Button 
-            onClick={handleSubmit} 
+          <Button
+            onClick={handleSubmit}
             disabled={!isValid || isSubmitting}
             className="w-full gap-2 font-bold shadow-md"
             size="lg"

@@ -21,7 +21,9 @@ interface DetailMatchRecord {
   away_player_id: string
   proposed_location: string
   score_submitted_at: string
-  elo_delta: number
+  elo_delta: number | null
+  home_elo_delta: number | null
+  away_elo_delta: number | null
   home_set_scores: number[]
   away_set_scores: number[]
   home_player: MatchProfile
@@ -51,8 +53,8 @@ export function MatchDetailScreen({ matchId, onBack, onViewProfile }: MatchDetai
     }
 
     const loadMatchDetails = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) setCurrentUserId(user.id)
+      const { data: session } = await supabase.auth.getSession()
+      if (session?.session?.user) setCurrentUserId(session.session.user.id)
 
       try {
         const { data: matchData, error: matchError } = await supabase
@@ -158,31 +160,56 @@ export function MatchDetailScreen({ matchId, onBack, onViewProfile }: MatchDetai
 
   const handlePostComment = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newComment.trim() || !currentUserId || isSubmitting) return
+    if (!newComment.trim() || isSubmitting) return
+
+    let userId = currentUserId
+    if (!userId) {
+      const { data: session } = await supabase.auth.getSession()
+      userId = session?.session?.user?.id ?? null
+    }
+
+    if (!userId) {
+      console.error('Cannot submit comment: no authenticated user found.')
+      return
+    }
+
     setIsSubmitting(true)
 
     const { data, error } = await supabase
       .from('match_comments')
-      .insert({ match_id: matchId, user_id: currentUserId, content: newComment.trim() })
-      .select('id, content, created_at, user_id')
+      .insert({ match_id: matchId, user_id: userId, content: newComment.trim() })
+      .select('id, content, created_at')
       .single()
 
-    if (!error && data) {
-      const { data: myProfile } = await supabase.from('profiles').select('name, avatar_url').eq('id', currentUserId).single()
-      setMatch(prev => prev ? { 
-        ...prev, 
+    if (error) {
+      console.error('Error posting comment:', error)
+      setIsSubmitting(false)
+      return
+    }
+
+    const { data: myProfile, error: profileError } = await supabase
+      .from('profiles')
+      .select('name, avatar_url')
+      .eq('id', userId)
+      .single()
+
+    if (profileError) {
+      console.error('Error loading commenter profile:', profileError)
+    }
+
+    if (data) {
+      setMatch(prev => prev ? {
+        ...prev,
         comments: [...prev.comments, {
           id: data.id,
           content: data.content,
           created_at: data.created_at,
           user: myProfile || { name: 'You', avatar_url: '' }
-        }] 
+        }]
       } : null)
       setNewComment('')
-    } else if (error) {
-       console.error("Error posting comment:", error)
     }
-    
+
     setIsSubmitting(false)
   }
 
@@ -242,7 +269,7 @@ export function MatchDetailScreen({ matchId, onBack, onViewProfile }: MatchDetai
                 <div className="text-center">
                   <h3 className="font-bold text-sm md:text-base text-foreground group-hover:text-primary transition-colors">{match.home_player.name}</h3>
                   <span className={cn("text-xs font-bold block mt-0.5", homeWon ? "text-emerald-500" : "text-red-500")}>
-                    {homeWon ? '▲ +' : '▼ -'}{match.elo_delta} Elo
+                    {match.home_elo_delta !== null ? (match.home_elo_delta >= 0 ? `▲ +${match.home_elo_delta}` : `▼ ${match.home_elo_delta}`) : '—'} Elo
                   </span>
                 </div>
               </div>
@@ -276,7 +303,7 @@ export function MatchDetailScreen({ matchId, onBack, onViewProfile }: MatchDetai
                 <div className="text-center">
                   <h3 className="font-bold text-sm md:text-base text-foreground group-hover:text-primary transition-colors">{match.away_player.name}</h3>
                   <span className={cn("text-xs font-bold block mt-0.5", !homeWon ? "text-emerald-500" : "text-red-500")}>
-                    {!homeWon ? '▲ +' : '▼ -'}{match.elo_delta} Elo
+                    {match.away_elo_delta !== null ? (match.away_elo_delta >= 0 ? `▲ +${match.away_elo_delta}` : `▼ ${match.away_elo_delta}`) : '—'} Elo
                   </span>
                 </div>
               </div>

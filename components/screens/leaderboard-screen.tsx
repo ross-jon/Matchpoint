@@ -62,24 +62,20 @@ function PlayerRow({ player, rank, previousRank, onViewProfile }: PlayerRowProps
         </div>
       </div>
 
-      <div className="grid flex-1 grid-cols-2 gap-4 sm:grid-cols-4">
-        <div className="text-center">
-          <p className="text-sm font-semibold text-foreground">{player.wins}</p>
-          <p className="text-xs text-muted-foreground">Wins</p>
+        <div className="grid flex-1 grid-cols-2 gap-4 sm:grid-cols-3">
+          <div className="text-center">
+            <p className="text-sm font-semibold text-foreground">{player.wins}</p>
+            <p className="text-xs text-muted-foreground">Wins</p>
+          </div>
+          <div className="text-center">
+            <p className="text-sm font-semibold text-foreground">{player.losses}</p>
+            <p className="text-xs text-muted-foreground">Losses</p>
+          </div>
+          <div className="text-center">
+            <p className="text-sm font-semibold text-foreground">{player.streakCount}</p>
+            <p className="text-xs text-muted-foreground">Streak</p>
+          </div>
         </div>
-        <div className="text-center">
-          <p className="text-sm font-semibold text-foreground">{player.losses}</p>
-          <p className="text-xs text-muted-foreground">Losses</p>
-        </div>
-        <div className="text-center">
-          <p className="text-sm font-semibold text-foreground">{player.streakCount}</p>
-          <p className="text-xs text-muted-foreground">Streak</p>
-        </div>
-        <div className="text-center">
-          <p className="text-sm font-semibold text-foreground capitalize">{player.streakType}</p>
-          <p className="text-xs text-muted-foreground">Type</p>
-        </div>
-      </div>
 
       <div className="text-right">
         <div className="text-xl font-bold text-foreground">{player.elo}</div>

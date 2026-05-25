@@ -36,8 +36,8 @@ export function FeedScreen({ onViewProfile, onViewMatch }: FeedScreenProps) {
 
   useEffect(() => {
     const fetchFeed = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) setCurrentUserId(user.id)
+      const { data: session } = await supabase.auth.getSession()
+      if (session?.session?.user) setCurrentUserId(session.session.user.id)
 
       const { data, error } = await supabase
         .from('matches')
@@ -166,45 +166,105 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
     
     if (!showComments && comments.length === 0) {
       setIsLoadingComments(true)
-      const { data, error } = await supabase
+
+      const { data: commentsData, error: commentsError } = await supabase
         .from('match_comments')
-        .select(`
-          id, content, created_at,
-          user:profiles!user_id(id, name, avatar_url)
-        `)
+        .select('id, content, created_at, user_id')
         .eq('match_id', match.id)
         .order('created_at', { ascending: true })
 
-      if (!error && data) {
-        setComments(data as unknown as CommentData[])
+      if (commentsError) {
+        console.error('Error loading feed comments:', commentsError)
+        setIsLoadingComments(false)
+        return
       }
+
+      const userIds = Array.from(new Set((commentsData || []).map((c: any) => c.user_id)))
+      const { data: profilesData, error: profilesError } = await supabase
+        .from('profiles')
+        .select('id, name, avatar_url')
+        .in('id', userIds)
+
+      if (profilesError) {
+        console.error('Error loading feed comment profiles:', profilesError)
+        setIsLoadingComments(false)
+        return
+      }
+
+      const profileMap = (profilesData || []).reduce((acc: Record<string, any>, profile: any) => {
+        acc[profile.id] = profile
+        return acc
+      }, {} as Record<string, any>)
+
+      const loadedComments = (commentsData || []).map((comment: any) => ({
+        id: comment.id,
+        content: comment.content,
+        created_at: comment.created_at,
+        user: profileMap[comment.user_id] || { id: comment.user_id, name: 'Unknown', avatar_url: '' }
+      }))
+
+      setComments(loadedComments as CommentData[])
       setIsLoadingComments(false)
     }
   }
 
   const submitComment = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newComment.trim() || !currentUserId || isSubmitting) return
+    if (!newComment.trim() || isSubmitting) return
+
+    let userId = currentUserId
+    if (!userId) {
+      const { data: session } = await supabase.auth.getSession()
+      userId = session?.session?.user?.id ?? null
+    }
+
+    if (!userId) {
+      console.error('Cannot submit comment: no authenticated user found.')
+      return
+    }
 
     setIsSubmitting(true)
+
     const { data, error } = await supabase
       .from('match_comments')
       .insert({
         match_id: match.id,
-        user_id: currentUserId,
+        user_id: userId,
         content: newComment.trim()
       })
-      .select(`
-        id, content, created_at,
-        user:profiles!user_id(id, name, avatar_url)
-      `)
+      .select('id, content, created_at')
       .single()
 
-    if (!error && data) {
-      setComments(prev => [...prev, data as unknown as CommentData])
+    if (error) {
+      console.error('Error posting comment:', error)
+      setIsSubmitting(false)
+      return
+    }
+
+    const { data: profileData, error: profileError } = await supabase
+      .from('profiles')
+      .select('id, name, avatar_url')
+      .eq('id', userId)
+      .single()
+
+    if (profileError) {
+      console.error('Error loading commenter profile:', profileError)
+    }
+
+    if (data) {
+      setComments(prev => [
+        ...prev,
+        {
+          id: data.id,
+          content: data.content,
+          created_at: data.created_at,
+          user: profileData ?? { id: userId, name: 'You', avatar_url: '' }
+        }
+      ])
       setCommentsCount(prev => prev + 1)
       setNewComment('')
     }
+
     setIsSubmitting(false)
   }
 
