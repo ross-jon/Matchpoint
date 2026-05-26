@@ -11,22 +11,29 @@ import { LeaderboardScreen } from '@/components/screens/leaderboard-screen'
 import { DiscoverScreen } from '@/components/screens/discover-screen'
 import { MessagesScreen } from '@/components/screens/messages-screen'
 import { ProfileScreen } from '@/components/screens/profile-screen'
+import { ProfileSetupScreen } from '@/components/screens/profile-setup-screen'
 import { ChallengeSheet } from '@/components/challenge-sheet'
 import { matchChallenges, type Player } from '@/lib/data'
 
 export default function MatchPointApp() {
-  const [activeScreen, setActiveScreen] = useState<Screen>('feed')
+  // Navigation & UI State
+  type AppScreen = Screen | 'onboarding'
+  const [activeScreen, setActiveScreen] = useState<AppScreen>('feed')
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null)
-  const [user, setUser] = useState<any>(null)
-  const [authChecked, setAuthChecked] = useState(false)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null)
+  
+  // App State
+  const [user, setUser] = useState<any>(null)
+  const [authChecked, setAuthChecked] = useState(false)
+  const [profileChecked, setProfileChecked] = useState(false)
   const [unreadMessages, setUnreadMessages] = useState(0)
   
-  // Challenge sheet state
+  // Challenge Sheet State
   const [challengeSheetOpen, setChallengeSheetOpen] = useState(false)
   const [selectedPlayerForChallenge, setSelectedPlayerForChallenge] = useState<Player | null>(null)
 
+  // Auth Lifecycle Hook
   useEffect(() => {
     let isMounted = true
 
@@ -53,6 +60,7 @@ export default function MatchPointApp() {
     }
   }, [])
 
+  // Unread Messages Listener Hook
   useEffect(() => {
     let isMounted = true
 
@@ -104,15 +112,53 @@ export default function MatchPointApp() {
     }
   }, [user?.id])
 
-  const notifications = 2 // System notifications
+  const notifications = 2 // System notifications Placeholder
   const pendingChallenges = matchChallenges.filter(
     c => c.status === 'pending' && c.challengedId === 'current'
   ).length
 
-  // Navigation handlers — Fixed: Clear state hooks to prevent visual account memory bleeding
-  const handleNavigate = useCallback((screen: Screen) => {
+  useEffect(() => {
+    let isMounted = true
+
+    if (!authChecked || !user) {
+      setProfileChecked(true)
+      return () => {
+        isMounted = false
+      }
+    }
+
+    const verifyProfile = async () => {
+      setProfileChecked(false)
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('name')
+        .eq('id', user.id)
+        .single()
+
+      if (!isMounted) return
+
+      const needsSetup = !!error || !data?.name?.trim()
+      if (needsSetup) {
+        setActiveScreen('onboarding')
+      } else if (activeScreen === 'onboarding') {
+        setActiveScreen('feed')
+      }
+
+      setProfileChecked(true)
+    }
+
+    verifyProfile()
+
+    return () => {
+      isMounted = false
+    }
+  }, [authChecked, user, activeScreen])
+
+  // Unified Navigation Handlers
+  const handleNavigate = useCallback((screen: AppScreen) => {
     setActiveScreen(screen)
-    setSelectedPlayerId(null) // ◄ Crucial: Wipes target profile memory on explicit core menu clicks
+    setSelectedPlayerId(null) // Crucial: Wipes target profile memory on explicit core menu clicks
     if (screen !== 'messages') {
       setSelectedConversationId(null)
     }
@@ -129,7 +175,7 @@ export default function MatchPointApp() {
     setAuthChecked(true)
   }, [])
 
-  // Challenge handlers
+  // Challenge Submissions
   const handleOpenChallenge = useCallback((player: any) => {
     setSelectedPlayerForChallenge(player)
     setChallengeSheetOpen(true)
@@ -163,6 +209,7 @@ export default function MatchPointApp() {
     }
   }, [])
 
+  // Initial Auth Loading State
   if (!authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
@@ -174,15 +221,38 @@ export default function MatchPointApp() {
     )
   }
 
+  // Intercept Unauthenticated Users -> Login Screen
   if (!user) {
-    return <LoginScreen onAuthSuccess={handleAuthSuccess} />
+    return (
+      <LoginScreen 
+        onAuthSuccess={handleAuthSuccess} 
+        onRequireProfileSetup={() => handleNavigate('onboarding')} 
+      />
+    )
+  }
+
+  if (!profileChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
+        <div className="text-center space-y-2">
+          <div className="h-10 w-10 rounded-full border-4 border-primary border-t-transparent animate-spin mx-auto" />
+          <p className="text-sm font-medium text-muted-foreground">Verifying your profile...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Authenticated user onboarding flow
+  if (activeScreen === 'onboarding') {
+    return <ProfileSetupScreen onComplete={() => setActiveScreen('feed')} />
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex min-h-[100dvh] w-full flex-col bg-background font-sans text-foreground">
+      
       {/* Top Navigation Bar */}
       <TopNav
-        activeScreen={activeScreen}
+        activeScreen={activeScreen as Screen}
         onNavigate={handleNavigate}
         unreadMessages={unreadMessages}
         notifications={notifications}
@@ -190,14 +260,16 @@ export default function MatchPointApp() {
       />
 
       {/* Main Layout */}
-      <div className="mx-auto flex max-w-7xl">
+      <div className="mx-auto flex max-w-7xl flex-1 w-full">
         {/* Left Sidebar - User Profile (Strava style) */}
         {(activeScreen === 'feed' || activeScreen === 'discover' || activeScreen === 'matches') && (
-          <UserSidebar onNavigate={handleNavigate} profile={null} />
+          <div className="hidden md:block">
+            <UserSidebar onNavigate={handleNavigate} profile={null} />
+          </div>
         )}
 
-        {/* Main Content */}
-        <main className="min-w-0 flex-1">
+        {/* Main Content Router */}
+        <main className="min-w-0 flex-1 overflow-y-auto relative bg-muted/10 md:bg-background pb-16 md:pb-0 safe-area-bottom">
           {(() => {
             switch (activeScreen) {
               case 'feed':
@@ -217,7 +289,6 @@ export default function MatchPointApp() {
                 return <MatchesScreen />
               case 'match-detail':
                 if (!selectedMatchId) {
-                  // Guard: if ID is missing, bounce back to feed to prevent empty-string Supabase query
                   setActiveScreen('feed')
                   return null
                 }
@@ -248,6 +319,10 @@ export default function MatchPointApp() {
                     selectedConversationId={selectedConversationId}
                     onSelectConversation={setSelectedConversationId}
                     onNavigateToMatches={handleNavigateToMatches}
+                    onViewProfile={(id) => {
+                      setSelectedPlayerId(id)
+                      setActiveScreen('profile')
+                    }}
                   />
                 )
               case 'profile':
@@ -264,7 +339,7 @@ export default function MatchPointApp() {
                   />
                 )
               default:
-                return <FeedScreen />
+                return null
             }
           })()}
         </main>
@@ -272,12 +347,12 @@ export default function MatchPointApp() {
 
       {/* Mobile Bottom Navigation */}
       <MobileBottomNav
-        activeScreen={activeScreen}
+        activeScreen={activeScreen as Screen}
         onNavigate={handleNavigate}
         unreadMessages={unreadMessages}
       />
 
-      {/* Challenge Sheet */}
+      {/* Challenge Sheet Component */}
       <ChallengeSheet
         player={selectedPlayerForChallenge}
         open={challengeSheetOpen}

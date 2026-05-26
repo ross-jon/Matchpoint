@@ -7,7 +7,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { supabase } from '@/utils/supabase/client'
 import { useRouter } from 'next/navigation'
 
-export type Screen = 'feed' | 'matches' | 'leaderboard' | 'discover' | 'messages' | 'profile' | 'match-detail'
+export type Screen = 'feed' | 'matches' | 'leaderboard' | 'discover' | 'messages' | 'profile' | 'match-detail' | 'onboarding'
 
 interface NavProfileData {
   id: string
