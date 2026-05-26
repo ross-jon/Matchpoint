@@ -21,6 +21,7 @@ export default function MatchPointApp() {
   const [activeScreen, setActiveScreen] = useState<AppScreen>('feed')
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
+  const [selectedMessageOpponentId, setSelectedMessageOpponentId] = useState<string | null>(null)
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null)
   
   // App State
@@ -161,6 +162,7 @@ export default function MatchPointApp() {
     setSelectedPlayerId(null) // Crucial: Wipes target profile memory on explicit core menu clicks
     if (screen !== 'messages') {
       setSelectedConversationId(null)
+      setSelectedMessageOpponentId(null)
     }
   }, [])
 
@@ -173,6 +175,12 @@ export default function MatchPointApp() {
     setUser(data.session?.user ?? null)
     setActiveScreen('feed')
     setAuthChecked(true)
+  }, [])
+
+  const handleNavigateToMessages = useCallback((playerId?: string) => {
+    setSelectedConversationId(null)
+    setSelectedMessageOpponentId(playerId ?? null)
+    setActiveScreen('messages')
   }, [])
 
   // Challenge Submissions
@@ -312,11 +320,21 @@ export default function MatchPointApp() {
                   />
                 )
               case 'discover':
-                return <DiscoverScreen onChallenge={handleOpenChallenge} />
+                return (
+                  <DiscoverScreen
+                    onChallenge={handleOpenChallenge}
+                    onViewProfile={(player) => {
+                      setSelectedPlayerId(player.id)
+                      setActiveScreen('profile')
+                    }}
+                    onMessage={(player) => handleNavigateToMessages(player.id)}
+                  />
+                )
               case 'messages':
                 return (
                   <MessagesScreen
                     selectedConversationId={selectedConversationId}
+                    selectedMessageOpponentId={selectedMessageOpponentId}
                     onSelectConversation={setSelectedConversationId}
                     onNavigateToMatches={handleNavigateToMatches}
                     onViewProfile={(id) => {

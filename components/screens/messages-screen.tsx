@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -375,6 +375,7 @@ function ChatView({ opponent, messages, currentUserId, onBack, onSubmitScore, on
 // FIX: Ensure interface perfectly aligns with app/page.tsx `<MessagesScreen />` rendering
 interface MessagesScreenProps {
   selectedConversationId: string | null
+  selectedMessageOpponentId?: string | null
   onSelectConversation: (id: string | null) => void
   onNavigateToMatches: () => void
   onViewProfile?: (playerId: string) => void 
@@ -382,6 +383,7 @@ interface MessagesScreenProps {
 
 export function MessagesScreen({ 
   selectedConversationId, 
+  selectedMessageOpponentId, 
   onSelectConversation, 
   onNavigateToMatches, 
   onViewProfile 
@@ -531,33 +533,35 @@ export function MessagesScreen({
     }
   }, [selectedConversationId])
 
-  const handleCreateConversation = async (opponentId: string) => {
+  const handleCreateConversation = useCallback(async (opponentId: string) => {
     if (!userId) return
 
-    const existing = conversations.find(c => 
-       (c.user_alpha === userId && c.user_beta === opponentId) ||
-       (c.user_alpha === opponentId && c.user_beta === userId)
-    )
+    const isAlpha = userId < opponentId
+    const userAlpha = isAlpha ? userId : opponentId
+    const userBeta = isAlpha ? opponentId : userId
 
-    if (existing) {
-       onSelectConversation(existing.id)
-       setIsNewMessageOpen(false)
-       return
+    const { data: existing, error: existingError } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('user_alpha', userAlpha)
+      .eq('user_beta', userBeta)
+      .maybeSingle()
+
+    if (existing && existing.id) {
+      onSelectConversation(existing.id)
+      setIsNewMessageOpen(false)
+      return
     }
 
     const { data: insertData, error: insertError } = await supabase
-       .from('conversations')
-       .insert([{
-          user_alpha: userId,
-          user_beta: opponentId,
-          updated_at: new Date().toISOString()
-       }])
-       .select('id')
-       .single()
+      .from('conversations')
+      .insert({ user_alpha: userAlpha, user_beta: userBeta })
+      .select('id')
+      .single()
 
     if (insertError || !insertData) {
-       console.error('Error establishing clean conversation logs:', insertError)
-       return
+      console.error('Error establishing clean conversation logs:', insertError ?? existingError)
+      return
     }
 
     const { data: opProfile } = await supabase.from('profiles').select('id, name, avatar_url').eq('id', opponentId).single()
@@ -565,8 +569,8 @@ export function MessagesScreen({
 
     const newConvData: ConversationRow = {
       id: insertData.id,
-      user_alpha: userId,
-      user_beta: opponentId,
+      user_alpha: userAlpha,
+      user_beta: userBeta,
       last_message_snippet: null,
       updated_at: new Date().toISOString(),
       user_alpha_profile: myProfile as Profile,
@@ -576,7 +580,12 @@ export function MessagesScreen({
     setConversations(prev => [newConvData, ...prev])
     onSelectConversation(newConvData.id)
     setIsNewMessageOpen(false)
-  }
+  }, [onSelectConversation, userId])
+
+  useEffect(() => {
+    if (!selectedMessageOpponentId || !userId || selectedConversationId) return
+    handleCreateConversation(selectedMessageOpponentId)
+  }, [selectedMessageOpponentId, userId, selectedConversationId, handleCreateConversation])
 
   const selectedConversation = conversations.find((c) => c.id === selectedConversationId)
   
