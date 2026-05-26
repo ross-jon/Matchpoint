@@ -1,19 +1,31 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { supabase } from '@/utils/supabase/client'
-import { Calendar, MapPin, Check, AlertCircle, X, Clock, Edit2, Trophy, Loader2 } from 'lucide-react'
+import { Calendar as CalendarIcon, MapPin, Check, AlertCircle, X, Clock, Edit2, Trophy, Loader2, Search } from 'lucide-react'
+import { Calendar } from '@/components/ui/calendar'
 import { cn } from '@/lib/utils'
+
+// Global Default Courts
+const GEOGRAPHIC_HUBS = [
+  'Flat Iron Park (Sandy)',
+  'Murray Park Courts',
+  'Draper Indoor Hub',
+  'Lone Peak Park'
+]
 
 interface MatchProfile {
   id: string
   name: string
   avatar_url: string
   elo_rating: number
+  geographic_hubs?: string[]
 }
 
 interface MatchRecord {
@@ -30,13 +42,50 @@ interface MatchRecord {
   away_player: MatchProfile
 }
 
-// FIX: Turbopack safe flat-fetch helper query
 const EX = '!'
 const MATCH_QUERY = [
   '*',
-  `home_player:profiles${EX}home_player_id(id, name, avatar_url, elo_rating)`,
-  `away_player:profiles${EX}away_player_id(id, name, avatar_url, elo_rating)`
+  `home_player:profiles${EX}home_player_id(id, name, avatar_url, elo_rating, geographic_hubs)`,
+  `away_player:profiles${EX}away_player_id(id, name, avatar_url, elo_rating, geographic_hubs)`
 ].join(',')
+
+const timeSlots = [
+  '6:00 AM', '7:00 AM', '8:00 AM', '9:00 AM', '10:00 AM', '11:00 AM',
+  '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM',
+  '6:00 PM', '7:00 PM', '8:00 PM', '9:00 PM'
+]
+
+function formatTimeSlot(isoString?: string) {
+  if (!isoString) return ''
+  const dt = new Date(isoString)
+  const hours = dt.getHours()
+  const minutes = dt.getMinutes()
+  const meridiem = hours >= 12 ? 'PM' : 'AM'
+  const normalized = hours % 12 === 0 ? 12 : hours % 12
+  return `${normalized}:${minutes.toString().padStart(2, '0')} ${meridiem}`
+}
+
+function combineDateAndTime(date: string, timeSlot: string) {
+  if (!date) return ''
+  if (!timeSlot) return new Date(`${date}T00:00:00`).toISOString()
+  const [time, meridiem] = timeSlot.split(' ')
+  let [hours, minutes] = time.split(':').map(Number)
+  if (meridiem === 'PM' && hours !== 12) hours += 12
+  if (meridiem === 'AM' && hours === 12) hours = 0
+  return new Date(`${date}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`).toISOString()
+}
+
+// --- Utility function for Date Validation bounds ---
+function getDateBounds() {
+  const today = new Date()
+  const nextYear = new Date()
+  nextYear.setFullYear(today.getFullYear() + 1)
+  
+  return {
+    min: today.toISOString().split('T')[0],
+    max: nextYear.toISOString().split('T')[0]
+  }
+}
 
 export function MatchesScreen() {
   const [upcomingMatches, setUpcomingMatches] = useState<MatchRecord[]>([])
@@ -81,13 +130,11 @@ export function MatchesScreen() {
     loadMatches()
   }, [])
 
-  // Action: Approve a submitted score (Moves match to 'verified')
   const handleApproveScore = async (matchId: string) => {
     const { error } = await supabase.from('matches').update({ status: 'verified', score_submitted_at: new Date().toISOString() }).eq('id', matchId)
     if (!error) setPendingScores(prev => prev.filter(m => m.id !== matchId))
   }
 
-  // Action: Accept or Decline a received request
   const handleRequestAction = async (matchId: string, action: 'accepted' | 'declined') => {
     setReceivedRequests(prev => prev.filter(m => m.id !== matchId))
     if (action === 'declined') {
@@ -101,20 +148,17 @@ export function MatchesScreen() {
     }
   }
 
-  // General Match Deletion (Cancel Request or Cancel Match)
   const handleCancelMatch = async (matchId: string, source: 'sent' | 'upcoming') => {
     if (source === 'sent') setSentRequests(prev => prev.filter(m => m.id !== matchId))
     if (source === 'upcoming') setUpcomingMatches(prev => prev.filter(m => m.id !== matchId))
     await supabase.from('matches').delete().eq('id', matchId)
   }
 
-  // Update Match Details (Location / Date)
-  const handleUpdateMatchDetails = async (matchId: string, location: string, date: string) => {
-    await supabase.from('matches').update({ proposed_location: location, scheduled_time: date }).eq('id', matchId)
-    loadMatches() // Reload to refresh all buckets just in case
+  const handleUpdateMatchDetails = async (matchId: string, location: string, scheduledTime: string) => {
+    await supabase.from('matches').update({ proposed_location: location, scheduled_time: scheduledTime }).eq('id', matchId)
+    loadMatches()
   }
 
-  // Submit Match Score
   const handleSubmitScore = async (matchId: string, homeScores: number[], awayScores: number[]) => {
     if (!currentUserId) return
     const { error } = await supabase.from('matches').update({
@@ -125,7 +169,7 @@ export function MatchesScreen() {
     }).eq('id', matchId)
 
     if (!error) {
-       loadMatches() // Reload completely to trigger the move from Upcoming -> Pending for the opponent
+       loadMatches() 
     }
   }
 
@@ -186,7 +230,7 @@ export function MatchesScreen() {
                  match={match} 
                  currentUserId={currentUserId}
                  onCancel={() => handleCancelMatch(match.id, 'upcoming')}
-                 onUpdateDetails={(loc, date) => handleUpdateMatchDetails(match.id, loc, date)}
+                 onUpdateDetails={(loc, scheduledTime) => handleUpdateMatchDetails(match.id, loc, scheduledTime)}
                  onSubmitScore={(hScores, aScores) => handleSubmitScore(match.id, hScores, aScores)}
               />
             ))}
@@ -206,7 +250,7 @@ export function MatchesScreen() {
                  key={match.id} 
                  match={match} 
                  onCancel={() => handleCancelMatch(match.id, 'sent')}
-                 onUpdateDetails={(loc, date) => handleUpdateMatchDetails(match.id, loc, date)}
+                 onUpdateDetails={(loc, scheduledTime) => handleUpdateMatchDetails(match.id, loc, scheduledTime)}
               />
             ))}
           </div>
@@ -218,6 +262,111 @@ export function MatchesScreen() {
 }
 
 // --- SUB-COMPONENTS ---
+
+function CourtSelector({ 
+  homeProfile, 
+  awayProfile, 
+  value, 
+  onChange 
+}: { 
+  homeProfile: MatchProfile; 
+  awayProfile: MatchProfile; 
+  value: string; 
+  onChange: (val: string) => void 
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [search, setSearch] = useState('')
+
+  const homeHubs = homeProfile.geographic_hubs || []
+  const awayHubs = awayProfile.geographic_hubs || []
+
+  const availableHubs = useMemo(() => {
+    return Array.from(new Set([...homeHubs, ...awayHubs, ...GEOGRAPHIC_HUBS]))
+  }, [homeHubs, awayHubs])
+
+  const suggestions = useMemo(() => {
+    const shared = homeHubs.filter((hub) => awayHubs.includes(hub))
+    if (shared.length > 0) return shared
+    if (homeHubs.length > 0) return homeHubs
+    return GEOGRAPHIC_HUBS
+  }, [homeHubs, awayHubs])
+
+  const filteredHubs = useMemo(() => {
+    if (!search.trim()) return availableHubs
+    return availableHubs.filter((hub) => hub.toLowerCase().includes(search.toLowerCase()))
+  }, [availableHubs, search])
+
+  return (
+    <div className="relative">
+      <div 
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex h-8 w-full cursor-pointer items-center justify-between rounded-md border border-input bg-background px-3 text-xs shadow-sm"
+      >
+        <span className={value ? 'text-foreground' : 'text-muted-foreground'}>
+          {value || 'Select Location'}
+        </span>
+        <MapPin className="h-3 w-3 opacity-50" />
+      </div>
+
+      {isOpen && (
+        <div className="absolute z-50 mt-1 max-h-64 w-full overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95">
+          <div className="border-b border-border/60 px-3 py-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search courts"
+                className="h-9 w-full rounded-md border border-input bg-background pl-9 text-sm"
+              />
+            </div>
+          </div>
+          <div className="max-h-56 overflow-auto p-1">
+            <div className="px-2 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase">
+              {search ? 'Search results' : 'Suggested courts'}
+            </div>
+            {search && filteredHubs.length === 0 && (
+              <div className="px-3 py-2 text-sm text-muted-foreground">No courts found.</div>
+            )}
+            {(search ? filteredHubs : suggestions).map((hub) => (
+              <div
+                key={hub}
+                onClick={() => {
+                  onChange(hub)
+                  setIsOpen(false)
+                  setSearch('')
+                }}
+                className="relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none hover:bg-accent hover:text-accent-foreground"
+              >
+                <MapPin className="mr-2 h-3 w-3 text-muted-foreground" />
+                {hub}
+              </div>
+            ))}
+            {!search && (
+              <>
+                <div className="px-2 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase">All courts</div>
+                {availableHubs.map((hub) => (
+                  <div
+                    key={hub}
+                    onClick={() => {
+                      onChange(hub)
+                      setIsOpen(false)
+                      setSearch('')
+                    }}
+                    className="relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-xs outline-none hover:bg-accent hover:text-accent-foreground"
+                  >
+                    <MapPin className="mr-2 h-3 w-3 text-muted-foreground" />
+                    {hub}
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function ReceivedRequestCard({ match, onAction }: { match: MatchRecord; onAction: (id: string, action: 'accepted'|'declined') => void }) {
   const dateStr = match.scheduled_time ? new Date(match.scheduled_time).toLocaleDateString() : 'TBD'
@@ -239,7 +388,7 @@ function ReceivedRequestCard({ match, onAction }: { match: MatchRecord; onAction
       
       <div className="grid grid-cols-2 gap-2 text-xs bg-card/50 rounded-lg p-3 border border-border/50">
         <div className="flex items-center gap-1.5 text-muted-foreground truncate">
-          <Calendar className="h-3.5 w-3.5 shrink-0" /> {dateStr}
+          <CalendarIcon className="h-3.5 w-3.5 shrink-0" /> {dateStr}
         </div>
         <div className="flex items-center gap-1.5 text-muted-foreground truncate">
           <MapPin className="h-3.5 w-3.5 shrink-0" /> {match.proposed_location || 'TBD'}
@@ -258,21 +407,27 @@ function ReceivedRequestCard({ match, onAction }: { match: MatchRecord; onAction
   )
 }
 
-function SentRequestCard({ match, onCancel, onUpdateDetails }: { match: MatchRecord; onCancel: () => void; onUpdateDetails: (loc: string, date: string) => void }) {
+function SentRequestCard({ match, onCancel, onUpdateDetails }: { match: MatchRecord; onCancel: () => void; onUpdateDetails: (loc: string, scheduledTime: string) => void }) {
   const [isEditing, setIsEditing] = useState(false)
   const [editLoc, setEditLoc] = useState(match.proposed_location || '')
-  const [editDate, setEditDate] = useState(match.scheduled_time ? match.scheduled_time.split('T')[0] : '')
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(match.scheduled_time ? new Date(match.scheduled_time) : undefined)
+  const [editTime, setEditTime] = useState(formatTimeSlot(match.scheduled_time))
+
+  const dateBounds = getDateBounds()
 
   const handleSave = () => {
-    onUpdateDetails(editLoc, editDate)
+    const dateValue = selectedDate ? selectedDate.toISOString().split('T')[0] : ''
+    const updatedScheduledTime = dateValue ? combineDateAndTime(dateValue, editTime) : match.scheduled_time || ''
+    onUpdateDetails(editLoc, updatedScheduledTime)
     setIsEditing(false)
   }
 
+  // UI Polish: Removed grayscale & opacity drops to look neutral, not declined.
   return (
-    <div className="rounded-xl border border-border bg-card p-4 space-y-3 opacity-90 transition-opacity">
+    <div className="rounded-xl border border-border bg-card p-4 space-y-3 transition-opacity">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
-          <Avatar className="h-10 w-10 shrink-0 grayscale">
+          <Avatar className="h-10 w-10 shrink-0">
             <AvatarImage src={match.away_player?.avatar_url} />
             <AvatarFallback>{match.away_player?.name?.[0]}</AvatarFallback>
           </Avatar>
@@ -280,9 +435,20 @@ function SentRequestCard({ match, onCancel, onUpdateDetails }: { match: MatchRec
             <h4 className="text-sm font-semibold text-foreground truncate">Waiting on {match.away_player?.name}</h4>
             {!isEditing && (
               <p className="text-xs text-muted-foreground truncate mt-0.5">
-                 <Calendar className="h-3 w-3 inline mr-1" />{match.scheduled_time ? new Date(match.scheduled_time).toLocaleDateString() : 'TBD'} 
-                 <span className="mx-1">•</span> 
-                 <MapPin className="h-3 w-3 inline mr-1" />{match.proposed_location || 'TBD'}
+                <span className="inline-flex items-center gap-1">
+                  <CalendarIcon className="h-3 w-3" />
+                  {match.scheduled_time ? new Date(match.scheduled_time).toLocaleDateString() : 'TBD'}
+                </span>
+                <span className="mx-1">•</span>
+                <span className="inline-flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  {match.scheduled_time ? formatTimeSlot(match.scheduled_time) : 'TBD'}
+                </span>
+                <span className="mx-1">•</span>
+                <span className="inline-flex items-center gap-1">
+                  <MapPin className="h-3 w-3" />
+                  {match.proposed_location || 'TBD'}
+                </span>
               </p>
             )}
           </div>
@@ -299,14 +465,57 @@ function SentRequestCard({ match, onCancel, onUpdateDetails }: { match: MatchRec
 
       {isEditing && (
         <div className="pt-3 border-t border-border/50 space-y-3">
-           <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
+           <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-1.5 relative z-10">
                 <label className="text-[10px] uppercase font-bold text-muted-foreground">Location</label>
-                <Input value={editLoc} onChange={e => setEditLoc(e.target.value)} placeholder="TBD" className="h-8 text-xs" />
+                <CourtSelector 
+                  homeProfile={match.home_player}
+                  awayProfile={match.away_player}
+                  value={editLoc}
+                  onChange={setEditLoc}
+                />
               </div>
               <div className="space-y-1.5">
                 <label className="text-[10px] uppercase font-bold text-muted-foreground">Date</label>
-                <Input type="date" value={editDate} onChange={e => setEditDate(e.target.value)} className="h-8 text-xs" />
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-between border-border bg-background text-left text-foreground text-xs h-8"
+                    >
+                      <span className={selectedDate ? 'text-foreground' : 'text-muted-foreground'}>
+                        {selectedDate ? selectedDate.toLocaleDateString() : 'Pick date'}
+                      </span>
+                      <CalendarIcon className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0">
+                    <Calendar
+                      mode="single"
+                      selected={selectedDate}
+                      onSelect={setSelectedDate}
+                      disabled={{ before: new Date(dateBounds.min), after: new Date(dateBounds.max) }}
+                      fromDate={new Date(dateBounds.min)}
+                      toDate={new Date(dateBounds.max)}
+                      className="border-0 bg-background"
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase font-bold text-muted-foreground">Time</label>
+                <Select value={editTime} onValueChange={setEditTime}>
+                  <SelectTrigger className="w-full border-border bg-background text-foreground text-xs h-8">
+                    <SelectValue placeholder="Choose time" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-card border-border text-foreground">
+                    {timeSlots.map((slot) => (
+                      <SelectItem key={slot} value={slot} className="hover:bg-secondary focus:bg-secondary focus:text-foreground text-foreground cursor-pointer">
+                        {slot}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
            </div>
            <div className="flex justify-end gap-2">
@@ -329,31 +538,32 @@ function UpcomingMatchCard({
   match: MatchRecord; 
   currentUserId: string | null;
   onCancel: () => void;
-  onUpdateDetails: (loc: string, date: string) => void;
+  onUpdateDetails: (loc: string, scheduledTime: string) => void;
   onSubmitScore: (h: number[], a: number[]) => void;
 }) {
   const isHome = match.home_player_id === currentUserId
   const opponent = isHome ? match.away_player : match.home_player
 
-  // State Toggles
   const [isEditing, setIsEditing] = useState(false)
   const [isScoring, setIsScoring] = useState(false)
 
-  // Edit State
   const [editLoc, setEditLoc] = useState(match.proposed_location || '')
-  const [editDate, setEditDate] = useState(match.scheduled_time ? match.scheduled_time.split('T')[0] : '')
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(match.scheduled_time ? new Date(match.scheduled_time) : undefined)
+  const [editTime, setEditTime] = useState(formatTimeSlot(match.scheduled_time))
 
-  // Score State (Supporting up to 3 sets)
   const [homeScores, setHomeScores] = useState<string[]>(['', '', ''])
   const [awayScores, setAwayScores] = useState<string[]>(['', '', ''])
+  
+  const dateBounds = getDateBounds()
 
   const handleSaveDetails = () => {
-    onUpdateDetails(editLoc, editDate)
+    const dateValue = selectedDate ? selectedDate.toISOString().split('T')[0] : ''
+    const updatedScheduledTime = dateValue ? combineDateAndTime(dateValue, editTime) : match.scheduled_time || ''
+    onUpdateDetails(editLoc, updatedScheduledTime)
     setIsEditing(false)
   }
 
   const handleSaveScore = () => {
-    // Filter out empty sets
     const finalHome = homeScores.map(s => parseInt(s)).filter(n => !isNaN(n))
     const finalAway = awayScores.map(s => parseInt(s)).filter(n => !isNaN(n))
     
@@ -375,29 +585,70 @@ function UpcomingMatchCard({
             <h4 className="font-semibold text-foreground truncate">vs {opponent?.name}</h4>
             {!isEditing && (
               <p className="text-xs text-muted-foreground flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3 mt-1">
-                <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {match.scheduled_time ? new Date(match.scheduled_time).toLocaleDateString() : 'TBD'}</span>
+                <span className="flex items-center gap-1"><CalendarIcon className="h-3 w-3" /> {match.scheduled_time ? new Date(match.scheduled_time).toLocaleDateString() : 'TBD'}</span>
+                <span className="flex items-center gap-1"><Clock className="h-3 w-3" /> {match.scheduled_time ? formatTimeSlot(match.scheduled_time) : 'TBD'}</span>
                 <span className="flex items-center gap-1 truncate"><MapPin className="h-3 w-3 shrink-0" /> <span className="truncate">{match.proposed_location || 'TBD'}</span></span>
               </p>
             )}
           </div>
         </div>
-        <Badge variant="outline" className="text-[10px] border-primary/30 text-primary uppercase shrink-0 bg-primary/5 hidden sm:flex">
-          Accepted
-        </Badge>
       </div>
 
       {/* Editing View */}
       {isEditing && (
         <div className="pt-3 border-t border-border/50 space-y-3 bg-muted/10 -mx-4 px-4 pb-4">
            <h5 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Edit Match Details</h5>
-           <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
+           <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-1.5 relative z-10">
                 <label className="text-[10px] uppercase font-bold text-muted-foreground">Location</label>
-                <Input value={editLoc} onChange={e => setEditLoc(e.target.value)} placeholder="TBD" className="h-8 text-xs bg-background" />
+                <CourtSelector 
+                  homeProfile={match.home_player}
+                  awayProfile={match.away_player}
+                  value={editLoc}
+                  onChange={setEditLoc}
+                />
               </div>
               <div className="space-y-1.5">
                 <label className="text-[10px] uppercase font-bold text-muted-foreground">Date</label>
-                <Input type="date" value={editDate} onChange={e => setEditDate(e.target.value)} className="h-8 text-xs bg-background" />
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-between border-border bg-background text-left text-foreground text-xs h-8"
+                    >
+                      <span className={selectedDate ? 'text-foreground' : 'text-muted-foreground'}>
+                        {selectedDate ? selectedDate.toLocaleDateString() : 'Pick date'}
+                      </span>
+                      <CalendarIcon className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0">
+                    <Calendar
+                      mode="single"
+                      selected={selectedDate}
+                      onSelect={setSelectedDate}
+                      disabled={{ before: new Date(dateBounds.min), after: new Date(dateBounds.max) }}
+                      fromDate={new Date(dateBounds.min)}
+                      toDate={new Date(dateBounds.max)}
+                      className="border-0 bg-background"
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase font-bold text-muted-foreground">Time</label>
+                <Select value={editTime} onValueChange={setEditTime}>
+                  <SelectTrigger className="w-full border-border bg-background text-foreground text-xs h-8">
+                    <SelectValue placeholder="Choose time" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-card border-border text-foreground">
+                    {timeSlots.map((slot) => (
+                      <SelectItem key={slot} value={slot} className="hover:bg-secondary focus:bg-secondary focus:text-foreground text-foreground cursor-pointer">
+                        {slot}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
            </div>
            <div className="flex justify-end gap-2">
@@ -446,10 +697,10 @@ function UpcomingMatchCard({
          </div>
       )}
 
-      {/* Action Button Row */}
+      {/* Action Button Row - UI Polish applied */}
       {!isEditing && !isScoring && (
         <div className="flex items-center gap-2 pt-1">
-          <Button size="sm" variant="secondary" className="flex-1 text-xs font-bold h-8" onClick={() => setIsScoring(true)}>
+          <Button size="sm" variant="default" className="flex-1 text-xs font-bold h-8 bg-primary/90 hover:bg-primary" onClick={() => setIsScoring(true)}>
              <Trophy className="h-3.5 w-3.5 mr-1.5" /> Report Score
           </Button>
           <Button size="icon" variant="outline" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={() => setIsEditing(true)}>
@@ -468,12 +719,12 @@ function PendingScoreCard({ match, onApprove }: { match: MatchRecord; onApprove:
   const scoreString = match.home_set_scores?.map((score, i) => `${score}-${match.away_set_scores[i]}`).join(', ')
 
   return (
-    <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 space-y-4 shadow-sm">
+    <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-4 shadow-sm">
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-medium text-amber-600">
+        <div className="flex items-center gap-2 text-sm font-medium text-primary">
           <AlertCircle className="h-4 w-4" /> Score Pending Verification
         </div>
-        <Button size="sm" onClick={() => onApprove(match.id)} className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold gap-1.5 h-8 shadow-sm">
+        <Button size="sm" onClick={() => onApprove(match.id)} className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold gap-1.5 h-8 shadow-sm">
           <Check className="h-3.5 w-3.5" /> Verify Score
         </Button>
       </div>

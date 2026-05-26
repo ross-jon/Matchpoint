@@ -378,7 +378,8 @@ interface MessagesScreenProps {
   selectedMessageOpponentId?: string | null
   onSelectConversation: (id: string | null) => void
   onNavigateToMatches: () => void
-  onViewProfile?: (playerId: string) => void 
+  onViewProfile?: (playerId: string) => void
+  onMessagesRead?: () => void
 }
 
 export function MessagesScreen({ 
@@ -386,7 +387,8 @@ export function MessagesScreen({
   selectedMessageOpponentId, 
   onSelectConversation, 
   onNavigateToMatches, 
-  onViewProfile 
+  onViewProfile,
+  onMessagesRead
 }: MessagesScreenProps) {
   const [conversations, setConversations] = useState<ConversationRow[]>([])
   const [messages, setMessages] = useState<MessageRow[]>([])
@@ -439,7 +441,7 @@ export function MessagesScreen({
           return acc
         }, {} as Record<string, Profile>)
 
-        // Step D: Stitch metadata models together locally
+        // Step D: Stitch metadata models together locally, including per-conversation unread counts
         const enrichedConversations = await Promise.all(
           convData.map(async (conv: any) => {
             let snippet = conv.last_message_snippet
@@ -451,12 +453,21 @@ export function MessagesScreen({
                  .order('created_at', { ascending: false })
                  .limit(1)
                  .single()
-               
                if (lastMsg) snippet = lastMsg.message_text
             }
+
+            // Fetch unread count: messages in this conversation not sent by current user and not yet read
+            const { count: unreadCount } = await supabase
+              .from('messages')
+              .select('id', { count: 'exact', head: true })
+              .eq('conversation_id', conv.id)
+              .eq('is_read', false)
+              .neq('sender_id', currentId)
+
             return {
               ...conv,
               last_message_snippet: snippet,
+              unread_count: unreadCount ?? 0,
               user_alpha_profile: profileMap[conv.user_alpha] || { id: conv.user_alpha, name: 'User', avatar_url: '' },
               user_beta_profile: profileMap[conv.user_beta] || { id: conv.user_beta, name: 'User', avatar_url: '' }
             }
@@ -494,10 +505,22 @@ export function MessagesScreen({
       } else {
         setMessages((msgData ?? []) as MessageRow[])
       }
-      
+
+      // Mark all unread messages in this conversation as read (only those not sent by current user)
+      if (userId) {
+        await supabase
+          .from('messages')
+          .update({ is_read: true })
+          .eq('conversation_id', selectedConversationId)
+          .eq('is_read', false)
+          .neq('sender_id', userId)
+      }
+
+      // Clear unread badge on this conversation locally and notify parent to refresh global count
       setConversations(prev => 
          prev.map(c => c.id === selectedConversationId ? { ...c, unread_count: 0 } : c)
       )
+      onMessagesRead?.()
     }
 
     loadMessages()
@@ -517,6 +540,16 @@ export function MessagesScreen({
           if (current.some(m => m.id === newMsg.id)) return current
           return [...current, newMsg]
         })
+
+        // If the incoming message is from the other person, mark it read immediately
+        // since the user is actively viewing this conversation
+        if (newMsg.sender_id !== userId) {
+          supabase
+            .from('messages')
+            .update({ is_read: true })
+            .eq('id', newMsg.id)
+            .then(() => onMessagesRead?.())
+        }
         
         setConversations(prev => 
           prev.map(c => 

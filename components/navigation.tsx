@@ -155,8 +155,8 @@ export function TopNav({ activeScreen, onNavigate, unreadMessages, profile }: To
 
             {showDropdown && (
               <>
-                <div className="fixed inset-0 z-10" onClick={() => setShowDropdown(false)} />
-                <div className="absolute right-0 mt-2 w-48 rounded-md border border-border bg-card p-1 shadow-xl z-20 animate-in fade-in slide-in-from-top-2 duration-100">
+                <div className="fixed inset-0 z-[110]" onClick={() => setShowDropdown(false)} />
+                <div className="absolute right-0 mt-2 w-48 rounded-md border border-border bg-card p-1 shadow-xl z-[120] animate-in fade-in slide-in-from-top-2 duration-100">
                   <button
                     onClick={() => {
                       onNavigate('profile')

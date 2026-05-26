@@ -38,12 +38,14 @@ export function LoginScreen({ onAuthSuccess, onRequireProfileSetup }: LoginScree
 
       if (needsSetup && onRequireProfileSetup) {
         onRequireProfileSetup()
-      } else if (onAuthSuccess) {
+      } else if (!needsSetup && onAuthSuccess) {
         onAuthSuccess()
       }
     } catch (err) {
       console.error("Profile check error:", err)
-      if (onAuthSuccess) onAuthSuccess() // Fallback
+      if (onRequireProfileSetup) {
+        onRequireProfileSetup()
+      }
     }
   }
 
@@ -75,8 +77,9 @@ export function LoginScreen({ onAuthSuccess, onRequireProfileSetup }: LoginScree
         return
       }
 
-      if (data.user) {
-        await checkProfileStatus(data.user.id)
+      const signUpUser = data?.user ?? data?.session?.user
+      if (signUpUser) {
+        await checkProfileStatus(signUpUser.id)
       }
 
     } else {
@@ -92,8 +95,9 @@ export function LoginScreen({ onAuthSuccess, onRequireProfileSetup }: LoginScree
         return
       }
       
-      if (data.user) {
-        await checkProfileStatus(data.user.id)
+      const signInUser = data?.user ?? data?.session?.user
+      if (signInUser) {
+        await checkProfileStatus(signInUser.id)
       }
     }
 

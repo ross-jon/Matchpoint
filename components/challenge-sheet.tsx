@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,7 +20,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Calendar, Clock, MapPin, Send, Trophy } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Calendar as CalendarPicker } from '@/components/ui/calendar'
+import { Clock, MapPin, Send, Trophy, Calendar } from 'lucide-react'
+import { supabase } from '@/utils/supabase/client'
 
 const GEOGRAPHIC_HUBS = [
   'Flat Iron Park (Sandy)',
@@ -57,7 +60,8 @@ const timeSlots = [
 
 // Convert "7:00 AM" style slot + a date string into an ISO timestamptz
 function toISOTimestamp(date: string, timeSlot: string): string {
-  if (!date || !timeSlot) return new Date('2099-01-01T00:00:00').toISOString()
+  if (!date) return new Date('2099-01-01T00:00:00').toISOString()
+  if (!timeSlot) return new Date(`${date}T00:00:00`).toISOString()
   const [time, meridiem] = timeSlot.split(' ')
   let [hours, minutes] = time.split(':').map(Number)
   if (meridiem === 'PM' && hours !== 12) hours += 12
@@ -67,9 +71,11 @@ function toISOTimestamp(date: string, timeSlot: string): string {
 }
 
 export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: ChallengeSheetProps) {
-  const [date, setDate] = useState('')
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined)
   const [time, setTime] = useState('')
   const [location, setLocation] = useState('')
+  const [locationQuery, setLocationQuery] = useState('')
+  const [allCourts, setAllCourts] = useState<string[]>([])
   const [customLocation, setCustomLocation] = useState('')
   const [useCustomLocation, setUseCustomLocation] = useState(false)
   const [message, setMessage] = useState('')
@@ -80,21 +86,49 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
   const avatarUrl = 'avatar_url' in player ? player.avatar_url : player.avatar
   const targetHubs = 'geographic_hubs' in player ? player.geographic_hubs : player.preferredHubs || []
 
+  const today = new Date()
+  const minDate = new Date(today)
+  const maxDate = new Date(today)
+  maxDate.setFullYear(maxDate.getFullYear() + 1)
+
+  useEffect(() => {
+    const loadCourts = async () => {
+      const { data, error } = await supabase.from('courts').select('name')
+      if (error) {
+        console.error('Error loading courts:', error)
+        return
+      }
+      setAllCourts((data ?? []).map((court) => court.name).sort((a, b) => a.localeCompare(b)))
+    }
+
+    if (open) {
+      loadCourts()
+    }
+  }, [open])
+
+  const selectedDateString = selectedDate ? selectedDate.toISOString().split('T')[0] : ''
+  const formattedDate = selectedDate
+    ? selectedDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    : 'Choose a date'
+
   const handleSubmit = async () => {
+    if (!selectedDate) return
+
     const resolvedLocation = useCustomLocation ? customLocation.trim() : location
 
     setIsSubmitting(true)
 
     onSubmit({
       playerId: player.id,
-      scheduled_time: toISOTimestamp(date, time),       // ✅ ISO timestamptz for DB
-      proposed_location: resolvedLocation || 'TBD',     // ✅ falls back to TBD if not provided
-      challenger_note: message,                          // ✅ correct DB column name
+      scheduled_time: toISOTimestamp(selectedDateString, time),
+      proposed_location: resolvedLocation || 'TBD',
+      challenger_note: message,
     })
 
-    setDate('')
+    setSelectedDate(undefined)
     setTime('')
     setLocation('')
+    setLocationQuery('')
     setCustomLocation('')
     setUseCustomLocation(false)
     setMessage('')
@@ -102,18 +136,17 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
     onOpenChange(false)
   }
 
-  // Date is the only required field; location and time are optional
-  const isValid = !!date
+  const isValid = !!selectedDate
 
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  const minDate = tomorrow.toISOString().split('T')[0]
+  const sortedLocations = useMemo(() => {
+    return [...allCourts].sort((a, b) => a.localeCompare(b))
+  }, [allCourts])
 
-  const sortedLocations = [...GEOGRAPHIC_HUBS].sort((a, b) => {
-    const aPreferred = targetHubs.includes(a) ? -1 : 1
-    const bPreferred = targetHubs.includes(b) ? -1 : 1
-    return aPreferred - bPreferred
-  })
+  const filteredLocations = useMemo(() => {
+    const query = locationQuery.trim().toLowerCase()
+    if (!query) return sortedLocations
+    return sortedLocations.filter((loc) => loc.toLowerCase().includes(query))
+  }, [locationQuery, sortedLocations])
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -152,15 +185,32 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
           <div>
             <label className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
               <Calendar className="h-4 w-4 text-muted-foreground" />
-              Proposed Date <span className="text-muted-foreground font-normal">(optional)</span>
+              Proposed Date <span className="text-muted-foreground font-normal">(required)</span>
             </label>
-            <Input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              min={minDate}
-              className="w-full bg-background border-border text-foreground"
-            />
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  className="w-full justify-between border-border bg-background text-left text-foreground"
+                >
+                  <span className={selectedDate ? 'text-foreground' : 'text-muted-foreground'}>
+                    {formattedDate}
+                  </span>
+                  <Calendar className="h-4 w-4 text-muted-foreground" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0">
+                <CalendarPicker
+                  mode="single"
+                  selected={selectedDate}
+                  onSelect={setSelectedDate}
+                  disabled={{ before: minDate, after: maxDate }}
+                  fromDate={minDate}
+                  toDate={maxDate}
+                  className="border-0 bg-background"
+                />
+              </PopoverContent>
+            </Popover>
           </div>
 
           {/* Proposed Time Input */}
@@ -191,21 +241,60 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
             </label>
             {!useCustomLocation ? (
               <>
+                {targetHubs.length > 0 && (
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {targetHubs.map((hub) => (
+                      <button
+                        type="button"
+                        key={hub}
+                        onClick={() => setLocation(hub)}
+                        className={
+                          `rounded-full border px-3 py-1 text-xs transition ${
+                            location === hub
+                              ? 'border-primary bg-primary text-primary-foreground'
+                              : 'border-border bg-background text-foreground hover:border-primary/80 hover:bg-primary/10'
+                          }`
+                        }
+                      >
+                        <span>{hub}</span>
+                        <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                          shared
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <Select value={location} onValueChange={setLocation}>
                   <SelectTrigger className="w-full border-border bg-background text-foreground">
-                    <SelectValue placeholder="Select a court hub" />
+                    <SelectValue placeholder="Search any court or choose a shared court" />
                   </SelectTrigger>
                   <SelectContent className="bg-card border-border text-foreground">
-                    {sortedLocations.map(loc => (
-                      <SelectItem key={loc} value={loc} className="hover:bg-secondary focus:bg-secondary focus:text-foreground text-foreground cursor-pointer">
-                        <span className="flex items-center gap-2">
-                          {loc}
-                          {targetHubs.includes(loc) && (
-                            <span className="text-xs text-primary font-medium">(Their preferred)</span>
-                          )}
-                        </span>
-                      </SelectItem>
-                    ))}
+                    <div className="px-3 py-2">
+                      <Input
+                        value={locationQuery}
+                        onChange={(e) => setLocationQuery(e.target.value)}
+                        placeholder="Search any court"
+                        className="h-9 w-full bg-background border-border text-foreground"
+                      />
+                    </div>
+                    {filteredLocations.length === 0 ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">No matching courts found.</div>
+                    ) : (
+                      filteredLocations.map((loc) => (
+                        <SelectItem
+                          key={loc}
+                          value={loc}
+                          className="hover:bg-secondary focus:bg-secondary focus:text-foreground text-foreground cursor-pointer"
+                        >
+                          <span className="flex items-center gap-2">
+                            {loc}
+                            {targetHubs.includes(loc) && (
+                              <span className="text-xs text-primary font-medium">(shared)</span>
+                            )}
+                          </span>
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
                 <button

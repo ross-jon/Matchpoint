@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { supabase } from '@/utils/supabase/client'
 import { LoginScreen } from '@/components/screens/login-screen'
 import { TopNav, MobileBottomNav, UserSidebar, type Screen } from '@/components/navigation'
@@ -62,10 +62,21 @@ export default function MatchPointApp() {
   }, [])
 
   // Unread Messages Listener Hook
+  const activeScreenRef = useRef<AppScreen>('feed')
+  useEffect(() => {
+    activeScreenRef.current = activeScreen
+  }, [activeScreen])
+
   useEffect(() => {
     let isMounted = true
 
     const loadUnreadMessages = async (userId: string) => {
+      // Don't re-query while the user is on the messages screen — they are
+      // actively reading and we manage the count locally to avoid a race where
+      // the DB UPDATE (marking is_read=true) fires this listener before the
+      // write fully commits, briefly restoring a stale non-zero count.
+      if (activeScreenRef.current === 'messages') return
+
       const messageCountResult = await supabase
         .from('messages')
         .select('id, conversations!inner(user_alpha, user_beta)', { count: 'exact', head: true })
@@ -175,6 +186,10 @@ export default function MatchPointApp() {
     setUser(data.session?.user ?? null)
     setActiveScreen('feed')
     setAuthChecked(true)
+  }, [])
+
+  const handleMessagesRead = useCallback(() => {
+    setUnreadMessages(0)
   }, [])
 
   const handleNavigateToMessages = useCallback((playerId?: string) => {
@@ -337,6 +352,7 @@ export default function MatchPointApp() {
                     selectedMessageOpponentId={selectedMessageOpponentId}
                     onSelectConversation={setSelectedConversationId}
                     onNavigateToMatches={handleNavigateToMatches}
+                    onMessagesRead={handleMessagesRead}
                     onViewProfile={(id) => {
                       setSelectedPlayerId(id)
                       setActiveScreen('profile')
