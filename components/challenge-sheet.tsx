@@ -81,11 +81,6 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  if (!player) return null
-
-  const avatarUrl = 'avatar_url' in player ? player.avatar_url : player.avatar
-  const targetHubs = 'geographic_hubs' in player ? player.geographic_hubs : player.preferredHubs || []
-
   const today = new Date()
   const minDate = new Date(today)
   const maxDate = new Date(today)
@@ -112,7 +107,7 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
     : 'Choose a date'
 
   const handleSubmit = async () => {
-    if (!selectedDate) return
+    if (!selectedDate || !player) return
 
     const resolvedLocation = useCustomLocation ? customLocation.trim() : location
 
@@ -147,6 +142,11 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
     if (!query) return sortedLocations
     return sortedLocations.filter((loc) => loc.toLowerCase().includes(query))
   }, [locationQuery, sortedLocations])
+
+  if (!player) return null
+
+  const avatarUrl = 'avatar_url' in player ? player.avatar_url : player.avatar
+  const targetHubs = 'geographic_hubs' in player ? player.geographic_hubs : player.preferredHubs || []
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

@@ -21,32 +21,11 @@ export function LoginScreen({ onAuthSuccess, onRequireProfileSetup }: LoginScree
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  // NEW: Function to check profile status after login/signup
-  const checkProfileStatus = async (userId: string) => {
-    try {
-      const { data: profile, error } = await supabase
-        .from('profiles')
-        .select('name')
-        .eq('id', userId)
-        .single()
-
-      if (error && error.code !== 'PGRST116') { // Ignore "Row not found" if they literally just signed up
-        console.error('Error fetching profile:', error)
-      }
-
-      const needsSetup = !profile?.name || profile.name.trim() === ''
-
-      if (needsSetup && onRequireProfileSetup) {
-        onRequireProfileSetup()
-      } else if (!needsSetup && onAuthSuccess) {
-        onAuthSuccess()
-      }
-    } catch (err) {
-      console.error("Profile check error:", err)
-      if (onRequireProfileSetup) {
-        onRequireProfileSetup()
-      }
-    }
+  // After auth succeeds, notify the parent. page.tsx's verifyProfile effect
+  // will handle the onboarding vs feed routing decision — we don't duplicate
+  // that logic here.
+  const handleAuthSuccess = () => {
+    if (onAuthSuccess) onAuthSuccess()
   }
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
@@ -77,9 +56,8 @@ export function LoginScreen({ onAuthSuccess, onRequireProfileSetup }: LoginScree
         return
       }
 
-      const signUpUser = data?.user ?? data?.session?.user
-      if (signUpUser) {
-        await checkProfileStatus(signUpUser.id)
+      if (data?.user || data?.session?.user) {
+        handleAuthSuccess()
       }
 
     } else {
@@ -95,9 +73,8 @@ export function LoginScreen({ onAuthSuccess, onRequireProfileSetup }: LoginScree
         return
       }
       
-      const signInUser = data?.user ?? data?.session?.user
-      if (signInUser) {
-        await checkProfileStatus(signInUser.id)
+      if (data?.user || data?.session?.user) {
+        handleAuthSuccess()
       }
     }
 

@@ -4,9 +4,9 @@ import React, { useEffect, useState } from 'react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge' // <--- ADDED THIS IMPORT
+import { Badge } from '@/components/ui/badge'
 import { supabase } from '@/utils/supabase/client'
-import { ThumbsUp, MessageCircle, Share2, MoreHorizontal, Send, Loader2, Calendar, MapPin, Trophy, Trash2 } from 'lucide-react'
+import { ThumbsUp, MessageCircle, Send, Loader2, MapPin, User, Clock, Box, MoreHorizontal, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface DatabaseMatch {
@@ -18,19 +18,28 @@ interface DatabaseMatch {
   home_set_scores: number[]
   away_set_scores: number[]
   score_submitted_at: string
-  elo_delta: number
+  start_time: string | null
+  end_time: string | null
+  surface: string | null
+  match_type: string | null
+  home_player_note: string | null
+  away_player_note: string | null
+  home_elo_delta: number | null
+  away_elo_delta: number | null
   home_player: { id: string; name: string; avatar_url: string }
   away_player: { id: string; name: string; avatar_url: string }
   likes: { user_id: string }[]
   comments: { id: string }[]
 }
 
-interface FeedScreenProps {
-  onViewProfile?: (playerId: string) => void
-  onViewMatch?: (matchId: string) => void
+interface CommentData {
+  id: string
+  content: string
+  created_at: string
+  user: { id: string; name: string; avatar_url: string }
 }
 
-export function FeedScreen({ onViewProfile, onViewMatch }: FeedScreenProps) {
+export function FeedScreen({ onViewProfile, onViewMatch }: { onViewProfile?: (id: string) => void, onViewMatch?: (id: string) => void }) {
   const [feedMatches, setFeedMatches] = useState<DatabaseMatch[]>([])
   const [loading, setLoading] = useState(true)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
@@ -40,21 +49,13 @@ export function FeedScreen({ onViewProfile, onViewMatch }: FeedScreenProps) {
       const { data: session } = await supabase.auth.getSession()
       if (session?.session?.user) setCurrentUserId(session.session.user.id)
 
-      // Flat-fetch strategy to bypass Turbopack compiler bugs
       const { data, error } = await supabase
         .from('matches')
         .select('*')
         .eq('status', 'verified')
         .order('score_submitted_at', { ascending: false })
 
-      if (error) {
-        console.error('Error fetching feed:', error)
-        setLoading(false)
-        return
-      }
-
-      if (!data || data.length === 0) {
-        setFeedMatches([])
+      if (error || !data) {
         setLoading(false)
         return
       }
@@ -65,26 +66,18 @@ export function FeedScreen({ onViewProfile, onViewMatch }: FeedScreenProps) {
         neededProfileIds.add(m.away_player_id)
       })
 
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, name, avatar_url')
-        .in('id', Array.from(neededProfileIds))
-
-      const profileMap = (profiles || []).reduce((acc: any, p: any) => {
-        acc[p.id] = p
-        return acc
-      }, {})
+      const { data: profiles } = await supabase.from('profiles').select('id, name, avatar_url').in('id', Array.from(neededProfileIds))
+      const profileMap = (profiles || []).reduce((acc: any, p: any) => { acc[p.id] = p; return acc }, {})
 
       const enrichedMatches = await Promise.all(data.map(async (match) => {
         const [{ data: likes }, { data: comments }] = await Promise.all([
            supabase.from('match_likes').select('user_id').eq('match_id', match.id),
            supabase.from('match_comments').select('id').eq('match_id', match.id)
         ])
-        
         return {
           ...match,
-          home_player: profileMap[match.home_player_id] || { id: match.home_player_id, name: 'Unknown', avatar_url: '' },
-          away_player: profileMap[match.away_player_id] || { id: match.away_player_id, name: 'Unknown', avatar_url: '' },
+          home_player: profileMap[match.home_player_id],
+          away_player: profileMap[match.away_player_id],
           likes: likes || [],
           comments: comments || []
         }
@@ -98,62 +91,36 @@ export function FeedScreen({ onViewProfile, onViewMatch }: FeedScreenProps) {
   }, [])
 
   return (
-    <div className="min-h-screen pb-24 md:pb-8 bg-background text-foreground">
-      <header className="border-b border-border bg-card sticky top-0 z-10">
-        <div className="px-4 py-4 md:px-6 max-w-2xl mx-auto flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-bold tracking-tight">Match Feed</h2>
-            <p className="text-xs text-muted-foreground">Recent verified results across the ladder</p>
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-2xl space-y-5 p-4">
+    <div className="min-h-screen pb-24 md:pb-8 bg-background">
+      <main className="mx-auto max-w-3xl space-y-6 p-4">
         {loading ? (
-          <div className="rounded-xl border border-border bg-card p-12 flex justify-center text-muted-foreground shadow-sm">
-            <Loader2 className="h-6 w-6 animate-spin text-primary" />
-          </div>
-        ) : feedMatches.length === 0 ? (
-          <div className="rounded-xl border border-border bg-card p-12 text-center text-sm text-muted-foreground shadow-sm">
-            No verified matches available yet.
-          </div>
-        ) : (
-          feedMatches.map((match) => (
-            <MatchCard 
-              key={match.id} 
-              match={match} 
-              onViewProfile={onViewProfile} 
-              onViewMatch={onViewMatch}
-              currentUserId={currentUserId} 
-            />
-          ))
-        )}
+          <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
+        ) : feedMatches.map((match) => (
+          <MatchCard key={match.id} match={match} onViewProfile={onViewProfile} onViewMatch={onViewMatch} currentUserId={currentUserId} />
+        ))}
       </main>
     </div>
   )
 }
 
-function formatDateTime(dateString: string): string {
-  if (!dateString) return 'Unknown Date'
-  const date = new Date(dateString)
-  const now = new Date()
-  const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24))
-  const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-
-  if (diffDays === 0) return `Today, ${timeStr}`
-  if (diffDays === 1) return `Yesterday, ${timeStr}`
-  if (diffDays < 7) return `${date.toLocaleDateString([], { weekday: 'short' })}, ${timeStr}`
-  return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${timeStr}`
+function formatDuration(start?: string | null, end?: string | null) {
+  if (!start || !end) return '—'
+  const diffMs = new Date(end).getTime() - new Date(start).getTime()
+  if (diffMs <= 0) return '—'
+  const hrs = Math.floor(diffMs / 3600000)
+  const mins = Math.floor((diffMs % 3600000) / 60000)
+  return hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`
 }
 
-interface CommentData {
-  id: string
-  content: string
-  created_at: string
-  user: { id: string; name: string; avatar_url: string }
+function timeAgo(dateString: string) {
+  const diffHours = Math.floor((new Date().getTime() - new Date(dateString).getTime()) / 3600000)
+  if (diffHours < 1) return 'Just now'
+  if (diffHours < 24) return `${diffHours}h ago`
+  return `${Math.floor(diffHours / 24)}d ago`
 }
 
-function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match: DatabaseMatch; onViewProfile?: (playerId: string) => void; onViewMatch?: (matchId: string) => void; currentUserId: string | null }) {
+function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match: DatabaseMatch, onViewProfile?: (id: string) => void, onViewMatch?: (id: string) => void, currentUserId: string | null }) {
+  // Social Functionality State
   const initialLiked = match.likes?.some(l => l.user_id === currentUserId) || false
   const [hasLiked, setHasLiked] = useState(initialLiked)
   const [likesCount, setLikesCount] = useState(match.likes?.length || 0)
@@ -165,17 +132,13 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isLoadingComments, setIsLoadingComments] = useState(false)
 
+  // Math Setup
   let homeSetsWon = 0
   let awaySetsWon = 0
-  const totalSets = match.home_set_scores?.length || 0
-  
-  for (let i = 0; i < totalSets; i++) {
-    if (match.home_set_scores[i] > match.away_set_scores[i]) homeSetsWon++
-    else awaySetsWon++
-  }
-
+  match.home_set_scores.forEach((s, i) => { if (s > match.away_set_scores[i]) homeSetsWon++; else awaySetsWon++ })
   const homeWon = homeSetsWon > awaySetsWon
 
+  // Interactions Logic
   const toggleLike = async () => {
     if (!currentUserId) return
     setHasLiked(!hasLiked)
@@ -239,12 +202,7 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
 
   const deleteComment = async (commentId: string) => {
     if (!currentUserId) return
-
-    const { error } = await supabase
-      .from('match_comments')
-      .delete()
-      .match({ id: commentId, user_id: currentUserId })
-
+    const { error } = await supabase.from('match_comments').delete().match({ id: commentId, user_id: currentUserId })
     if (!error) {
       setComments(prev => prev.filter((comment) => comment.id !== commentId))
       setCommentsCount(prev => Math.max(prev - 1, 0))
@@ -252,171 +210,208 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
   }
 
   return (
-    <article className="rounded-xl border border-border bg-card shadow-sm overflow-hidden transition-all duration-200">
+    <article className="rounded-2xl border border-border bg-card shadow-sm overflow-hidden text-foreground">
       
-      {/* 1. Activity Header (Cleaned up meta-data) */}
-      <div className="px-4 py-3 flex items-start justify-between bg-muted/10 border-b border-border/40">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-             <Badge variant="outline" className="bg-background text-[9px] px-1.5 py-0 rounded-sm font-bold uppercase tracking-widest text-muted-foreground border-border">Official Match</Badge>
-             <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1">
-                <Calendar className="h-3 w-3" /> {formatDateTime(match.score_submitted_at)}
-             </span>
+      {/* HEADER: Social Context */}
+      <div className="p-5 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex -space-x-2">
+            <Avatar className="h-10 w-10 border-2 border-card shadow-sm cursor-pointer hover:z-10" onClick={() => onViewProfile?.(match.home_player.id)}>
+              <AvatarImage src={match.home_player?.avatar_url} />
+              <AvatarFallback>{match.home_player?.name?.[0]}</AvatarFallback>
+            </Avatar>
+            <Avatar className="h-10 w-10 border-2 border-card shadow-sm cursor-pointer hover:z-10" onClick={() => onViewProfile?.(match.away_player.id)}>
+              <AvatarImage src={match.away_player?.avatar_url} />
+              <AvatarFallback>{match.away_player?.name?.[0]}</AvatarFallback>
+            </Avatar>
           </div>
-          {match.proposed_location && (
-            <span className="text-xs font-medium text-foreground/80 flex items-center gap-1">
-              <MapPin className="h-3 w-3 text-muted-foreground" /> {match.proposed_location}
-            </span>
-          )}
+          <div>
+            <h3 className="text-sm font-semibold flex items-center gap-1.5">
+              <span className="cursor-pointer hover:underline" onClick={() => onViewProfile?.(match.home_player.id)}>{match.home_player?.name}</span>
+              <span className="text-muted-foreground font-normal">with</span>
+              <span className="cursor-pointer hover:underline" onClick={() => onViewProfile?.(match.away_player.id)}>{match.away_player?.name}</span>
+            </h3>
+            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+              {match.proposed_location} <span className="opacity-50">•</span> {timeAgo(match.score_submitted_at)}
+            </p>
+          </div>
         </div>
-        <button className="text-muted-foreground hover:text-foreground rounded-lg p-1 transition-colors">
-          <MoreHorizontal className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground bg-secondary/50 px-2 py-1 rounded-full">Ranked</span>
+          <button className="text-muted-foreground hover:text-foreground"><MoreHorizontal className="h-4 w-4" /></button>
+        </div>
       </div>
 
-      {/* 2. Broadcast-Style Scoreboard Matrix */}
-      <div className="p-4 bg-background">
-        <div
+      {/* BODY: Strava-Style Grid Layout */}
+      <div className="px-5 pb-5">
+        <div 
           onClick={() => onViewMatch?.(match.id)}
-          className="w-full cursor-pointer rounded-3xl border border-border bg-muted/10 p-4 transition hover:border-primary/40"
+          className="grid grid-cols-1 md:grid-cols-[1fr_160px] gap-[1px] bg-border rounded-xl overflow-hidden cursor-pointer hover:ring-1 hover:ring-primary/20 transition-all"
         >
-          <div className="space-y-4">
-            <div className={cn(
-              "rounded-3xl border border-border bg-background p-4",
-              homeWon ? "shadow-sm border-emerald-300/30" : ""
-            )}>
-              <div className="flex items-center gap-3">
-                <Avatar className="h-10 w-10 shrink-0 border border-background shadow-sm">
+          {/* Col 1: Player Context & Scores */}
+          <div className="flex flex-col bg-card/50">
+            {/* Home Player Row */}
+            <div className="flex items-stretch border-b border-border/50">
+              {/* Player Info (Darker Background) */}
+              <div className="flex-1 flex items-center gap-2.5 p-3 pl-3 bg-background/50">
+                <div className="w-3 flex justify-center shrink-0">
+                   {homeWon && <svg className="h-3 w-3 text-lime-400 fill-current" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" /></svg>}
+                </div>
+                <Avatar className="h-7 w-7 border border-border/50 shrink-0">
                   <AvatarImage src={match.home_player?.avatar_url} />
-                  <AvatarFallback className="text-[11px] font-bold">{match.home_player?.name?.[0] || 'H'}</AvatarFallback>
+                  <AvatarFallback className="text-[10px]">{match.home_player?.name?.[0]}</AvatarFallback>
                 </Avatar>
-                <div className="min-w-0">
-                  <div className={cn(
-                    "truncate text-sm sm:text-base",
-                    homeWon ? 'font-semibold text-foreground' : 'font-medium text-muted-foreground'
-                  )}>
-                    {match.home_player?.name}
-                  </div>
-                  <div className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">Sets Won</div>
-                </div>
-                <div className="ml-auto flex items-center gap-2">
-                  {match.home_set_scores.map((score, idx) => {
-                    const awayScore = match.away_set_scores[idx]
-                    const won = score > awayScore
-                    return (
-                      <div key={idx} className={cn(
-                        'min-w-[40px] rounded-2xl border px-2 py-2 text-center text-sm font-semibold tabular-nums',
-                        won ? 'bg-emerald-500/15 text-emerald-600 border-emerald-300' : 'bg-muted/10 text-muted-foreground border-border'
-                      )}>
-                        {score}
-                      </div>
-                    )
-                  })}
-                </div>
-                <div className="text-right">
-                  <div className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Total</div>
-                  <div className="text-sm font-semibold text-foreground">{homeSetsWon}</div>
-                </div>
+                <span className={cn("font-semibold text-sm truncate", homeWon ? "text-foreground" : "text-muted-foreground")}>
+                  {match.home_player.name}
+                </span>
+                <span className={cn("ml-auto text-xs font-bold text-right shrink-0 min-w-[2.5rem]", (match.home_elo_delta || 0) >= 0 ? "text-lime-400" : "text-red-500")}>
+                  {(match.home_elo_delta || 0) > 0 ? '+' : ''}{match.home_elo_delta || 0}
+                </span>
+              </div>
+              {/* Score Grid (Lighter Background) */}
+              <div className="flex items-center justify-end gap-1.5 p-3 pr-4 bg-muted/20 w-[136px] shrink-0">
+                {match.home_set_scores.map((s, i) => {
+                  const isWinner = s > match.away_set_scores[i]
+                  return (
+                    <div key={i} className={cn(
+                      "flex h-9 w-9 items-center justify-center rounded-md border font-mono text-[15px]",
+                      isWinner 
+                        ? "bg-lime-500/15 border-lime-400/30 text-lime-300 font-bold" 
+                        : "bg-muted/40 border-border/60 text-muted-foreground font-medium"
+                    )}>
+                      {s}
+                    </div>
+                  )
+                })}
               </div>
             </div>
 
-            <div className={cn(
-              "rounded-3xl border border-border bg-background p-4",
-              !homeWon ? "shadow-sm border-emerald-300/30" : ""
-            )}>
-              <div className="flex items-center gap-3">
-                <Avatar className="h-10 w-10 shrink-0 border border-background shadow-sm">
+            {/* Away Player Row */}
+            <div className="flex items-stretch">
+              {/* Player Info (Darker Background) */}
+              <div className="flex-1 flex items-center gap-2.5 p-3 pl-3 bg-background/50">
+                <div className="w-3 flex justify-center shrink-0">
+                   {!homeWon && <svg className="h-3 w-3 text-lime-400 fill-current" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" /></svg>}
+                </div>
+                <Avatar className="h-7 w-7 border border-border/50 shrink-0">
                   <AvatarImage src={match.away_player?.avatar_url} />
-                  <AvatarFallback className="text-[11px] font-bold">{match.away_player?.name?.[0] || 'A'}</AvatarFallback>
+                  <AvatarFallback className="text-[10px]">{match.away_player?.name?.[0]}</AvatarFallback>
                 </Avatar>
-                <div className="min-w-0">
-                  <div className={cn(
-                    "truncate text-sm sm:text-base",
-                    !homeWon ? 'font-semibold text-foreground' : 'font-medium text-muted-foreground'
-                  )}>
-                    {match.away_player?.name}
-                  </div>
-                  <div className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">Sets Won</div>
-                </div>
-                <div className="ml-auto flex items-center gap-2">
-                  {match.away_set_scores.map((score, idx) => {
-                    const homeScore = match.home_set_scores[idx]
-                    const won = score > homeScore
-                    return (
-                      <div key={idx} className={cn(
-                        'min-w-[40px] rounded-2xl border px-2 py-2 text-center text-sm font-semibold tabular-nums',
-                        won ? 'bg-emerald-500/15 text-emerald-600 border-emerald-300' : 'bg-muted/10 text-muted-foreground border-border'
-                      )}>
-                        {score}
-                      </div>
-                    )
-                  })}
-                </div>
-                <div className="text-right">
-                  <div className="text-xs uppercase tracking-[0.22em] text-muted-foreground">Total</div>
-                  <div className="text-sm font-semibold text-foreground">{awaySetsWon}</div>
-                </div>
+                <span className={cn("font-semibold text-sm truncate", !homeWon ? "text-foreground" : "text-muted-foreground")}>
+                  {match.away_player.name}
+                </span>
+                <span className={cn("ml-auto text-xs font-bold text-right shrink-0 min-w-[2.5rem]", (match.away_elo_delta || 0) >= 0 ? "text-lime-400" : "text-red-500")}>
+                  {(match.away_elo_delta || 0) > 0 ? '+' : ''}{match.away_elo_delta || 0}
+                </span>
+              </div>
+              {/* Score Grid (Lighter Background) */}
+              <div className="flex items-center justify-end gap-1.5 p-3 pr-4 bg-muted/20 w-[136px] shrink-0">
+                {match.away_set_scores.map((s, i) => {
+                  const isWinner = s > match.home_set_scores[i]
+                  return (
+                    <div key={i} className={cn(
+                      "flex h-9 w-9 items-center justify-center rounded-md border font-mono text-[15px]",
+                      isWinner 
+                        ? "bg-lime-500/15 border-lime-400/30 text-lime-300 font-bold" 
+                        : "bg-muted/40 border-border/60 text-muted-foreground font-medium"
+                    )}>
+                      {s}
+                    </div>
+                  )
+                })}
               </div>
             </div>
+          </div>
 
-            <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground">
-              <div className="rounded-2xl border border-border bg-muted/10 p-3">
-                <div className="uppercase tracking-[0.22em] text-[10px]">Set Count</div>
-                <div className="mt-1 text-sm font-semibold text-foreground">{totalSets} sets</div>
-              </div>
-              <div className="rounded-2xl border border-border bg-muted/10 p-3">
-                <div className="uppercase tracking-[0.22em] text-[10px]">Match Winner</div>
-                <div className="mt-1 text-sm font-semibold text-foreground">{homeWon ? match.home_player.name : match.away_player.name}</div>
-              </div>
+          {/* Col 2: Match Info */}
+          <div className="bg-card/50 p-4">
+            <h4 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-3">Match Info</h4>
+            <div className="space-y-2.5 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2.5"><User className="h-3.5 w-3.5" /> {match.match_type || 'Singles'}</div>
+              <div className="flex items-center gap-2.5"><Box className="h-3.5 w-3.5" /> {match.surface || 'Outdoor Hard'}</div>
+              <div className="flex items-center gap-2.5"><Clock className="h-3.5 w-3.5" /> {formatDuration(match.start_time, match.end_time)}</div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 3. Footer: Social Interactions */}
-      <div className="flex items-center justify-between border-t border-border bg-muted/10 px-4 py-2">
+      {/* PINNED MATCH NOTES */}
+      {(match.home_player_note || match.away_player_note) && (
+        <div className="px-5 pb-4">
+           <h4 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-3 border-b border-border/50 pb-2">Match Notes</h4>
+           <div className="space-y-4">
+             {match.home_player_note && (
+               <div className="flex gap-3">
+                 <Avatar className="h-8 w-8 shrink-0 border border-border/50"><AvatarImage src={match.home_player.avatar_url} /><AvatarFallback>{match.home_player.name[0]}</AvatarFallback></Avatar>
+                 <div>
+                   <div className="flex items-baseline gap-2 mb-0.5">
+                     <span className="text-xs font-bold">{match.home_player.name}</span>
+                     <span className="text-[10px] text-muted-foreground">{timeAgo(match.score_submitted_at)}</span>
+                   </div>
+                   <p className="text-sm text-foreground/90 leading-relaxed">{match.home_player_note}</p>
+                 </div>
+               </div>
+             )}
+             {match.away_player_note && (
+               <div className="flex gap-3">
+                 <Avatar className="h-8 w-8 shrink-0 border border-border/50"><AvatarImage src={match.away_player.avatar_url} /><AvatarFallback>{match.away_player.name[0]}</AvatarFallback></Avatar>
+                 <div>
+                   <div className="flex items-baseline gap-2 mb-0.5">
+                     <span className="text-xs font-bold">{match.away_player.name}</span>
+                     <span className="text-[10px] text-muted-foreground">{timeAgo(match.score_submitted_at)}</span>
+                   </div>
+                   <p className="text-sm text-foreground/90 leading-relaxed">{match.away_player_note}</p>
+                 </div>
+               </div>
+             )}
+           </div>
+        </div>
+      )}
+
+      {/* FOOTER: Social Interactions */}
+      <div className="flex items-center justify-between border-t border-border bg-secondary/5 px-5 py-3">
         <div className="flex items-center gap-4">
           <button 
             onClick={toggleLike}
             className={cn(
-              "flex items-center gap-1.5 text-xs font-medium transition-colors py-1 px-2 rounded-md hover:bg-muted/50",
+              "flex items-center gap-1.5 text-xs font-medium transition-colors py-1 rounded-md",
               hasLiked ? "text-primary" : "text-muted-foreground hover:text-foreground"
             )}
           >
-            <ThumbsUp className={cn("h-3.5 w-3.5 transition-transform active:scale-75", hasLiked && "fill-primary")} />
-            <span>{likesCount}</span>
+            <ThumbsUp className={cn("h-4 w-4 transition-transform active:scale-75", hasLiked && "fill-primary text-primary")} />
+            <span>{likesCount} {likesCount === 1 ? 'Like' : 'Likes'}</span>
           </button>
           
           <button 
             onClick={toggleComments}
             className={cn(
-              "flex items-center gap-1.5 text-xs font-medium transition-colors py-1 px-2 rounded-md hover:bg-muted/50",
-              showComments ? "text-foreground bg-muted/50" : "text-muted-foreground hover:text-foreground"
+              "flex items-center gap-1.5 text-xs font-medium transition-colors py-1 rounded-md",
+              showComments ? "text-foreground" : "text-muted-foreground hover:text-foreground"
             )}
           >
-            <MessageCircle className={cn("h-3.5 w-3.5 transition-transform active:scale-75", showComments && "fill-muted-foreground/20")} />
-            <span>{commentsCount}</span>
+            <MessageCircle className={cn("h-4 w-4 transition-transform active:scale-75", showComments && "fill-muted-foreground/20")} />
+            <span>{commentsCount} Comments</span>
           </button>
         </div>
       </div>
 
       {/* Expandable Comments Tray */}
       {showComments && (
-        <div className="border-t border-border bg-background px-4 py-3 space-y-3 animate-in slide-in-from-top-1 duration-200">
+        <div className="border-t border-border bg-background px-5 py-4 space-y-4 animate-in slide-in-from-top-1 duration-200">
           {isLoadingComments ? (
             <div className="flex justify-center py-2"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
           ) : comments.length === 0 ? (
-            <p className="text-[11px] font-medium uppercase tracking-wider text-center text-muted-foreground py-2 border border-dashed border-border/60 rounded-lg">No comments yet. Start the banter!</p>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-center text-muted-foreground py-4 border border-dashed border-border/60 rounded-lg">No comments yet. Start the banter!</p>
           ) : (
-            <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+            <div className="space-y-4 max-h-60 overflow-y-auto pr-1">
               {comments.map((comment) => (
-                <div key={comment.id} className="flex gap-2 items-start group">
-                  <Avatar className="h-6 w-6 mt-0.5 shrink-0 border border-border">
+                <div key={comment.id} className="flex gap-2.5 items-start group">
+                  <Avatar className="h-7 w-7 mt-0.5 shrink-0 border border-border">
                     <AvatarImage src={comment.user?.avatar_url} />
                     <AvatarFallback className="text-[9px] font-bold">{comment.user?.name?.[0] || '?'}</AvatarFallback>
                   </Avatar>
-                  <div className="bg-muted/30 border border-border/40 rounded-xl rounded-tl-sm px-3 py-2 text-xs flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-0.5 gap-2">
+                  <div className="bg-muted/30 border border-border/40 rounded-xl rounded-tl-sm px-3.5 py-2 text-xs flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-1 gap-2">
                        <span className="font-bold text-foreground">{comment.user?.name}</span>
                        <span className="text-[9px] text-muted-foreground">{new Date(comment.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
                     </div>
@@ -426,7 +421,7 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
                     <button
                       type="button"
                       onClick={() => deleteComment(comment.id)}
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+                      className="inline-flex h-7 w-7 mt-1 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -436,16 +431,17 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
             </div>
           )}
 
-          <form onSubmit={submitComment} className="flex items-center gap-2 pt-1">
+          <form onSubmit={submitComment} className="flex items-center gap-2 pt-2">
             <Input 
               placeholder="Add a comment..." 
-              className="h-9 bg-muted/20 border-border text-xs focus-visible:ring-primary/40 rounded-full px-4"
+              className="h-10 bg-muted/20 border-border text-sm focus-visible:ring-primary/40 rounded-full px-4"
               value={newComment}
               onChange={(e) => setNewComment(e.target.value)}
               disabled={isSubmitting}
+              autoComplete="off"
             />
-            <Button type="submit" size="icon" className="h-9 w-9 shrink-0 rounded-full transition-transform active:scale-90" disabled={!newComment.trim() || isSubmitting}>
-              {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5 ml-0.5" />}
+            <Button type="submit" size="icon" className="h-10 w-10 shrink-0 rounded-full transition-transform active:scale-90" disabled={!newComment.trim() || isSubmitting}>
+              {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4 ml-0.5" />}
             </Button>
           </form>
         </div>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -8,17 +8,18 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { supabase } from '@/utils/supabase/client'
-import { Camera, Check, MapPin, Trophy, Target, MessageSquare, Swords, Loader2, Search, Plus, X } from 'lucide-react'
+import { Camera, Check, MapPin, Trophy, Target, MessageSquare, Swords, Loader2, Search, Plus, X, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const getDicebearAvatar = (seed: string) =>
-  `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(seed)}&backgroundColor=0D0E12&radius=50`
-
-const AVATAR_SEEDS = ['MatchPoint', 'Baseline', 'Ace', 'Champion', 'Rally']
+// ── Types ──────────────────────────────────────────────────────────────────
 
 interface ProfileData {
   id: string
   name: string
+  first_name: string | null
+  last_name: string | null
+  gender: string | null
+  birthdate: string | null
   avatar_url: string
   bio: string
   elo_rating: number
@@ -28,8 +29,17 @@ interface ProfileData {
   streak_type: 'win' | 'loss'
   geographic_hubs: string[]
   open_to_challenges: boolean
-  // Added for the new recent form UI - you will need to map this from your match history
-  recent_elo_deltas?: string[] 
+}
+
+interface MatchRecord {
+  id: string
+  home_player_id: string
+  away_player_id: string
+  home_elo_delta: number | null
+  away_elo_delta: number | null
+  status: string
+  scheduled_time: string | null
+  created_at: string
 }
 
 interface Court {
@@ -41,33 +51,271 @@ interface ProfileScreenProps {
   targetPlayerId?: string | null
   onNavigateToMessages?: (conversationId: string) => void
   onOpenChallengeModal?: (player: { id: string; name: string }) => void
+  onViewMatch?: (matchId: string) => void
 }
 
-export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChallengeModal }: ProfileScreenProps) {
-  const [isEditing, setIsEditing] = useState(false)
-  const [profile, setProfile] = useState<ProfileData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const MONTHS = [
+  'January','February','March','April','May','June',
+  'July','August','September','October','November','December'
+]
+
+const currentYear = new Date().getFullYear()
+const YEARS = Array.from({ length: 91 }, (_, i) => currentYear - 10 - i)
+
+// ── ELO Chart ─────────────────────────────────────────────────────────────
+
+function EloChart({ matches, currentUserId, currentElo }: {
+  matches: MatchRecord[]
+  currentUserId: string
+  currentElo: number
+}) {
+  // Build 8 weekly Sunday snapshots over the last ~8 weeks
+  const points = useMemo(() => {
+    const now = new Date()
+    const lastSunday = new Date(now)
+    lastSunday.setDate(now.getDate() - now.getDay())
+    lastSunday.setHours(23, 59, 59, 999)
+
+    const sundays = Array.from({ length: 8 }, (_, i) => {
+      const d = new Date(lastSunday)
+      d.setDate(lastSunday.getDate() - (7 * (7 - i)))
+      return d
+    })
+
+    const completed = matches
+      .filter(m => m.status === 'verified')
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+
+    let rating = currentElo
+    const ratedMatches = completed.map(match => {
+      const isHome = match.home_player_id === currentUserId
+      const delta = isHome ? match.home_elo_delta : match.away_elo_delta
+      const after = rating
+      const before = delta != null ? rating - delta : rating
+      rating = before
+      return { ...match, after, before }
+    })
+
+    return sundays.map(sunday => {
+      const matchesBeforeSunday = ratedMatches.filter(m => new Date(m.created_at) <= sunday)
+      if (matchesBeforeSunday.length === 0) return null
+      return matchesBeforeSunday[0].after
+    })
+  }, [matches, currentUserId, currentElo])
+
+  // Fill nulls: carry forward from most recent known, backfill current elo if needed
+  const filledPoints = useMemo(() => {
+    const reversed = [...points].reverse()
+    let lastKnown = currentElo
+    const reverseFilled = reversed.map(p => {
+      if (p !== null) { lastKnown = p; return p }
+      return lastKnown
+    })
+    return reverseFilled.reverse()
+  }, [points, currentElo])
+
+  const minElo = Math.min(...filledPoints) - 30
+  const maxElo = Math.max(...filledPoints) + 30
+  const range = maxElo - minElo || 1
+
+  const W = 280, H = 100
+  const padX = 10, padY = 8
+
+  const toX = (i: number) => padX + (i / 7) * (W - padX * 2)
+  const toY = (elo: number) => padY + (1 - (elo - minElo) / range) * (H - padY * 2)
+
+  const pathD = filledPoints.map((elo, i) =>
+    `${i === 0 ? 'M' : 'L'} ${toX(i).toFixed(1)} ${toY(elo).toFixed(1)}`
+  ).join(' ')
+
+  const areaD = `${pathD} L ${toX(7).toFixed(1)} ${H} L ${toX(0).toFixed(1)} ${H} Z`
+
+  const startElo = filledPoints[0]
+  const endElo = filledPoints[7]
+  const delta = endElo - startElo
+  const trend = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat'
+
+  // Labels: show month/day for each Sunday
+  const now = new Date()
+  const lastSunday = new Date(now)
+  lastSunday.setDate(now.getDate() - now.getDay())
+  const sundays = Array.from({ length: 8 }, (_, i) => {
+    const d = new Date(lastSunday)
+    d.setDate(lastSunday.getDate() - (7 * (7 - i)))
+    return d
+  })
+
+  return (
+    <div className="w-full h-full flex flex-col px-4 pt-3 pb-2">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Elo Over Time</span>
+        <span className={cn(
+          "text-xs font-bold flex items-center gap-1",
+          trend === 'up' ? 'text-primary' : trend === 'down' ? 'text-destructive' : 'text-muted-foreground'
+        )}>
+          {trend === 'up' ? <TrendingUp className="h-3 w-3" /> : trend === 'down' ? <TrendingDown className="h-3 w-3" /> : <Minus className="h-3 w-3" />}
+          {delta > 0 ? '+' : ''}{delta} pts (8 wks)
+        </span>
+      </div>
+
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full flex-1" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="eloGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {/* Area fill */}
+        <path d={areaD} fill="url(#eloGrad)" />
+        {/* Line */}
+        <path d={pathD} fill="none" stroke="hsl(var(--primary))" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        {/* Dots */}
+        {filledPoints.map((elo, i) => (
+          <circle key={i} cx={toX(i)} cy={toY(elo)} r="2.5"
+            fill="hsl(var(--card))" stroke="hsl(var(--primary))" strokeWidth="1.5" />
+        ))}
+        {/* Current ELO label on last point */}
+        <text
+          x={toX(7) - 2} y={toY(endElo) - 5}
+          textAnchor="end"
+          fontSize="8"
+          fill="hsl(var(--primary))"
+          fontWeight="700"
+        >{endElo}</text>
+      </svg>
+
+      {/* X-axis labels: first and last */}
+      <div className="flex justify-between mt-0.5">
+        <span className="text-[9px] text-muted-foreground">
+          {sundays[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+        </span>
+        <span className="text-[9px] text-muted-foreground">
+          {sundays[7].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+// ── Recent Form Strip ──────────────────────────────────────────────────────
+
+function RecentFormStrip({ matches, currentUserId, onViewMatch }: {
+  matches: MatchRecord[]
+  currentUserId: string
+  onViewMatch?: (matchId: string) => void
+}) {
+  const recent = useMemo(() => {
+    return matches
+      .filter(m => m.status === 'verified')
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 5)
+  }, [matches])
+
+  if (recent.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full px-4">
+        <p className="text-xs text-muted-foreground">No completed matches yet.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center justify-center gap-1.5 px-4 h-full">
+      {recent.map((match) => {
+        const isHome = match.home_player_id === currentUserId
+        const delta = isHome ? match.home_elo_delta : match.away_elo_delta
+        const isWin = delta !== null ? delta > 0 : null
+
+        return (
+          <button
+            key={match.id}
+            onClick={() => onViewMatch?.(match.id)}
+            title={`View match — ${match.scheduled_time ? new Date(match.scheduled_time).toLocaleDateString() : ''}`}
+            className={cn(
+              'flex h-8 min-w-[3rem] items-center justify-center rounded px-1.5 text-xs font-bold shadow-sm select-none transition-opacity hover:opacity-80',
+              isWin === true
+                ? 'bg-primary text-primary-foreground'
+                : isWin === false
+                  ? 'bg-destructive/10 text-destructive border border-destructive/20'
+                  : 'bg-muted text-muted-foreground'
+            )}
+          >
+            {delta !== null ? (delta > 0 ? `+${delta}` : `${delta}`) : '–'}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────
+
+export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChallengeModal, onViewMatch }: ProfileScreenProps) {
+  const [isEditing, setIsEditing]       = useState(false)
+  const [profile, setProfile]           = useState<ProfileData | null>(null)
+  const [loading, setLoading]           = useState(true)
+  const [saving, setSaving]             = useState(false)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
+  const [matches, setMatches]           = useState<MatchRecord[]>([])
+  const [showChallengeTooltip, setShowChallengeTooltip] = useState(false)
 
   // Edit form state
-  const [name, setName] = useState('')
-  const [bio, setBio] = useState('')
+  const [firstName, setFirstName]     = useState('')
+  const [lastName, setLastName]       = useState('')
+  const [gender, setGender]           = useState('')
+  const [birthMonth, setBirthMonth]   = useState('')
+  const [birthDay, setBirthDay]       = useState('')
+  const [birthYear, setBirthYear]     = useState('')
+  const [bio, setBio]                 = useState('')
   const [openToChallenges, setOpenToChallenges] = useState(true)
   const [selectedHubs, setSelectedHubs] = useState<string[]>([])
-  const [avatarUrl, setAvatarUrl] = useState('')
+  const [avatarUrl, setAvatarUrl]     = useState('')
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
-  const [showAvatarPicker, setShowAvatarPicker] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Courts state
-  const [allCourts, setAllCourts] = useState<Court[]>([])
+  const [allCourts, setAllCourts]   = useState<Court[]>([])
   const [courtSearch, setCourtSearch] = useState('')
   const [addingCourt, setAddingCourt] = useState(false)
   const [newCourtName, setNewCourtName] = useState('')
 
   const isMe = !targetPlayerId || targetPlayerId === currentUserId
+  const profileId = profile?.id ?? ''
+
+  const verifiedMatches = useMemo(() => (
+    matches.filter(m => m.status === 'verified')
+  ), [matches])
+
+  const matchStats = useMemo(() => {
+    let computedWins = 0
+    let computedLosses = 0
+
+    for (const match of verifiedMatches) {
+      const isHome = match.home_player_id === profileId
+      const delta = isHome ? match.home_elo_delta : match.away_elo_delta
+      if (delta == null) continue
+      if (delta > 0) computedWins += 1
+      else if (delta < 0) computedLosses += 1
+    }
+
+    return {
+      computedWins,
+      computedLosses,
+    }
+  }, [verifiedMatches, profileId])
+
+  const wins = profile?.wins ?? matchStats.computedWins
+  const losses = profile?.losses ?? matchStats.computedLosses
+  const totalMatches = wins + losses
+  const winRate = totalMatches > 0 ? ((wins / totalMatches) * 100).toFixed(1) : '0.0'
+
+  const daysInMonth = birthMonth && birthYear
+    ? new Date(parseInt(birthYear), parseInt(birthMonth), 0).getDate()
+    : 31
+  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
 
   useEffect(() => {
     const fetchProfileContext = async () => {
@@ -79,25 +327,52 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
       const targetId = targetPlayerId || activeId
       if (!targetId) { setLoading(false); return }
 
-      const [profileResult, courtsResult] = await Promise.all([
+      const eightWeeksAgo = new Date()
+      eightWeeksAgo.setDate(eightWeeksAgo.getDate() - 56)
+
+      const [profileResult, courtsResult, matchesResult] = await Promise.all([
         supabase.from('profiles').select('*').eq('id', targetId).single(),
-        supabase.from('courts').select('id, name').order('name')
+        supabase.from('courts').select('id, name').order('name'),
+        supabase.from('matches')
+          .select('id, home_player_id, away_player_id, home_elo_delta, away_elo_delta, status, scheduled_time, created_at')
+          .or(`home_player_id.eq.${targetId},away_player_id.eq.${targetId}`)
+          .order('created_at', { ascending: false })
       ])
+
+      if (profileResult.error) {
+        console.error('Error loading profile:', profileResult.error)
+      }
+      if (courtsResult.error) {
+        console.error('Error loading courts:', courtsResult.error)
+      }
+      if (matchesResult.error) {
+        console.error('Error loading profile matches:', matchesResult.error)
+      }
 
       if (!profileResult.error && profileResult.data) {
         const data = profileResult.data as ProfileData
         setProfile(data)
-        setName(data.name || '')
+        setFirstName(data.first_name || '')
+        setLastName(data.last_name || '')
+        setGender(data.gender || '')
         setBio(data.bio || '')
         setOpenToChallenges(data.open_to_challenges ?? true)
         setSelectedHubs(data.geographic_hubs || [])
         setAvatarUrl(data.avatar_url || '')
-      } else if (profileResult.error) {
-        console.error('Error loading profile:', profileResult.error)
+        if (data.birthdate) {
+          const bd = new Date(data.birthdate)
+          setBirthMonth(String(bd.getMonth() + 1))
+          setBirthDay(String(bd.getDate()))
+          setBirthYear(String(bd.getFullYear()))
+        }
       }
 
       if (!courtsResult.error && courtsResult.data) {
         setAllCourts(courtsResult.data as Court[])
+      }
+
+      if (!matchesResult.error && matchesResult.data) {
+        setMatches(matchesResult.data as MatchRecord[])
       }
 
       setLoading(false)
@@ -112,11 +387,21 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
       const ext = file.name.split('.').pop()?.toLowerCase() ?? 'png'
       const filePath = `avatars/${currentUserId}/${crypto.randomUUID()}.${ext}`
       const { error } = await supabase.storage.from('avatars').upload(filePath, file, { upsert: true })
-      if (error) throw error
+      if (error) {
+        // If bucket is not present, fail gracefully and fallback to a generated avatar
+        if (error.message && error.message.includes('Bucket not found')) {
+          console.warn('Avatar upload failed: storage bucket not found. Falling back to generated avatar.')
+          const seed = (profile && profile.name) ? profile.name : (currentUserId || 'player')
+          const fallback = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(seed)}&backgroundColor=166534&radius=50`
+          setAvatarUrl(fallback)
+          return
+        }
+        throw error
+      }
       const { data: urlData } = await supabase.storage.from('avatars').getPublicUrl(filePath)
       if (urlData?.publicUrl) setAvatarUrl(urlData.publicUrl)
     } catch (err: any) {
-      console.error('Avatar upload error:', err.message)
+      console.error('Avatar upload error:', err?.message || err)
     } finally {
       setUploadingAvatar(false)
     }
@@ -155,10 +440,19 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
   const handleSave = async () => {
     if (!profile) return
     setSaving(true)
+    const displayName = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ')
+    const birthdateStr = birthMonth && birthDay && birthYear
+      ? `${birthYear}-${birthMonth.padStart(2, '0')}-${birthDay.padStart(2, '0')}`
+      : null
+
     const { error } = await supabase
       .from('profiles')
       .update({
-        name: name.trim(),
+        first_name: firstName.trim() || null,
+        last_name: lastName.trim() || null,
+        name: displayName || profile.name,
+        gender: gender || null,
+        birthdate: birthdateStr,
         bio: bio.trim() || null,
         avatar_url: avatarUrl,
         open_to_challenges: openToChallenges,
@@ -169,27 +463,37 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
     if (!error) {
       setProfile(prev => prev ? {
         ...prev,
-        name: name.trim(),
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        name: displayName || prev.name,
+        gender,
+        birthdate: birthdateStr,
         bio: bio.trim(),
         avatar_url: avatarUrl,
         open_to_challenges: openToChallenges,
         geographic_hubs: selectedHubs,
       } : null)
       setIsEditing(false)
-      setShowAvatarPicker(false)
     }
     setSaving(false)
   }
 
   const handleCancelEdit = () => {
     if (!profile) return
-    setName(profile.name || '')
+    setFirstName(profile.first_name || '')
+    setLastName(profile.last_name || '')
+    setGender(profile.gender || '')
     setBio(profile.bio || '')
     setOpenToChallenges(profile.open_to_challenges ?? true)
     setSelectedHubs(profile.geographic_hubs || [])
     setAvatarUrl(profile.avatar_url || '')
-    setShowAvatarPicker(false)
     setCourtSearch('')
+    if (profile.birthdate) {
+      const bd = new Date(profile.birthdate)
+      setBirthMonth(String(bd.getMonth() + 1))
+      setBirthDay(String(bd.getDate()))
+      setBirthYear(String(bd.getFullYear()))
+    }
     setIsEditing(false)
   }
 
@@ -236,14 +540,14 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
     )
   }
 
-  const totalMatches = profile.wins + profile.losses
-  const winRate = totalMatches > 0 ? ((profile.wins / totalMatches) * 100).toFixed(1) : '0.0'
-
   const filteredCourts = allCourts.filter(c =>
     c.name.toLowerCase().includes(courtSearch.toLowerCase())
   )
   const exactMatch = allCourts.some(c => c.name.toLowerCase() === courtSearch.toLowerCase().trim())
   const showAddNew = isEditing && courtSearch.trim().length > 1 && !exactMatch
+
+  const displayFirstName = profile.first_name || profile.name?.split(' ')[0] || ''
+  const displayLastName = profile.last_name || profile.name?.split(' ').slice(1).join(' ') || ''
 
   return (
     <div className="min-h-screen pb-24 md:pb-8 bg-background">
@@ -259,7 +563,7 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
                 <Button variant="outline" size="sm" onClick={handleCancelEdit} disabled={saving}>Cancel</Button>
                 <Button size="sm" onClick={handleSave} className="gap-1.5" disabled={saving}>
                   {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                  {saving ? 'Saving...' : 'Save'}
+                  {saving ? 'Saving…' : 'Save'}
                 </Button>
               </div>
             ) : (
@@ -271,10 +575,10 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
 
       <main className="p-4 md:p-6 max-w-2xl mx-auto space-y-4">
 
-        {/* Profile Details Area */}
+        {/* ── Profile Header ── */}
         <div className="flex flex-col items-center text-center sm:flex-row sm:items-start sm:text-left gap-6 px-2">
           {/* Avatar */}
-          <div className="shrink-0 flex flex-col items-center gap-2">
+          <div className="shrink-0">
             <div className="relative">
               <Avatar className="h-28 w-28 ring-2 ring-border">
                 <AvatarImage src={isEditing ? avatarUrl : profile.avatar_url} alt={profile.name} />
@@ -301,141 +605,179 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
                 }}
               />
             </div>
-
-            {/* Avatar picker toggle */}
-            {isEditing && (
-              <button
-                onClick={() => setShowAvatarPicker(p => !p)}
-                className="text-xs text-primary hover:underline"
-              >
-                {showAvatarPicker ? 'Hide avatars' : 'Choose avatar'}
-              </button>
-            )}
-
-            {/* Dicebear avatar grid */}
-            {isEditing && showAvatarPicker && (
-              <div className="grid grid-cols-5 gap-1.5 mt-1">
-                {AVATAR_SEEDS.map(seed => {
-                  const url = getDicebearAvatar(seed)
-                  return (
-                    <button
-                      key={seed}
-                      type="button"
-                      onClick={() => setAvatarUrl(url)}
-                      className={cn(
-                        'rounded-lg border p-0.5 transition',
-                        avatarUrl === url ? 'border-primary ring-2 ring-primary/20' : 'border-border'
-                      )}
-                    >
-                      <img src={url} alt={seed} className="h-10 w-10 rounded-md object-cover" />
-                    </button>
-                  )
-                })}
-              </div>
-            )}
           </div>
 
           {/* Name & Bio */}
           <div className="flex-1 min-w-0 w-full pt-1">
             {isEditing ? (
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Your name"
-                className="text-lg font-bold bg-background border-border mb-3"
-              />
-            ) : (
-              <div className="flex items-center gap-3 justify-center sm:justify-start">
-                <h3 className="text-2xl font-bold text-foreground tracking-tight truncate">{profile.name}</h3>
-                <Badge className="bg-primary/10 text-primary border-none text-xs font-semibold px-2 py-0.5">
-                  <Trophy className="mr-1.5 h-3.5 w-3.5" />{profile.elo_rating} Elo
-                </Badge>
-              </div>
-            )}
+              <div className="space-y-3">
+                {/* First + Last Name */}
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    placeholder="First name"
+                    className="bg-background border-border text-sm"
+                  />
+                  <Input
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    placeholder="Last name"
+                    className="bg-background border-border text-sm"
+                  />
+                </div>
 
-            {isEditing ? (
-              <Textarea
-                value={bio}
-                onChange={(e) => setBio(e.target.value)}
-                className="mt-4 bg-background border-border text-sm focus-visible:ring-primary"
-                placeholder="Describe your playstyle, e.g. Left-handed baseline counter-puncher..."
-                rows={3}
-              />
+                {/* Gender (private — only shown in own edit mode) */}
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1 block">Gender <span className="italic">(private)</span></label>
+                  <select
+                    value={gender}
+                    onChange={(e) => setGender(e.target.value)}
+                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
+                  >
+                    <option value="">Select gender…</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="non-binary">Non-binary</option>
+                    <option value="prefer_not_to_say">Prefer not to say</option>
+                  </select>
+                </div>
+
+                {/* Birthdate (private — only shown in own edit mode) */}
+                <div>
+                  <label className="text-xs text-muted-foreground mb-1 block">Date of Birth <span className="italic">(private)</span></label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <select
+                      value={birthMonth}
+                      onChange={(e) => { setBirthMonth(e.target.value); setBirthDay('') }}
+                      className="rounded-md border border-border bg-background px-2 py-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
+                    >
+                      <option value="">Month</option>
+                      {MONTHS.map((m, i) => (
+                        <option key={m} value={String(i + 1)}>{m}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={birthDay}
+                      onChange={(e) => setBirthDay(e.target.value)}
+                      disabled={!birthMonth}
+                      className="rounded-md border border-border bg-background px-2 py-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20 disabled:opacity-50"
+                    >
+                      <option value="">Day</option>
+                      {days.map(d => <option key={d} value={String(d)}>{d}</option>)}
+                    </select>
+                    <select
+                      value={birthYear}
+                      onChange={(e) => setBirthYear(e.target.value)}
+                      className="rounded-md border border-border bg-background px-2 py-2 text-sm text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20"
+                    >
+                      <option value="">Year</option>
+                      {YEARS.map(y => <option key={y} value={String(y)}>{y}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Bio */}
+                <Textarea
+                  value={bio}
+                  onChange={(e) => setBio(e.target.value)}
+                  className="bg-background border-border text-sm focus-visible:ring-primary"
+                  placeholder="Describe your playstyle, e.g. Left-handed baseline counter-puncher, heavy topspin forehand. Available weekday evenings."
+                  rows={3}
+                />
+              </div>
             ) : (
-              <p className="mt-3 text-muted-foreground text-sm leading-relaxed">
-                {profile.bio || 'No playstyle bio added yet.'}
-              </p>
+              <>
+                <div className="flex items-center gap-3 justify-center sm:justify-start">
+                  <h3 className="text-2xl font-bold text-foreground tracking-tight truncate">{profile.name}</h3>
+                  <Badge className="bg-primary/10 text-primary border-none text-xs font-semibold px-2 py-0.5">
+                    <Trophy className="mr-1.5 h-3.5 w-3.5" />{profile.elo_rating} Elo
+                  </Badge>
+                </div>
+                {profile.bio ? (
+                  <p className="mt-3 text-muted-foreground text-sm leading-relaxed">
+                    {profile.bio}
+                  </p>
+                ) : null}
+
+                {/* Actions for viewing another player (moved under the name) */}
+                {!isMe && !isEditing && (
+                  <div className="mt-3 flex gap-2 justify-center sm:justify-start">
+                    <Button variant="outline" onClick={handleInitiateChat} className="gap-2 font-semibold">
+                      <MessageSquare className="h-4 w-4" /> Message
+                    </Button>
+                    <div className="relative">
+                      <Button
+                        onClick={() => {
+                          if (profile.open_to_challenges) {
+                            onOpenChallengeModal?.({ id: profile.id, name: profile.name })
+                          }
+                        }}
+                        onMouseEnter={() => !profile.open_to_challenges && setShowChallengeTooltip(true)}
+                        onMouseLeave={() => setShowChallengeTooltip(false)}
+                        className={cn(
+                          "gap-2 font-semibold",
+                          !profile.open_to_challenges && "opacity-50 cursor-not-allowed"
+                        )}
+                      >
+                        <Swords className="h-4 w-4" /> Challenge
+                      </Button>
+                      {!profile.open_to_challenges && showChallengeTooltip && (
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 rounded-lg bg-popover border border-border shadow-lg text-xs text-popover-foreground whitespace-nowrap z-50">
+                          This player is not open to challenges at this time
+                          <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-popover" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
 
-        {/* Combined Stats & Actions Rectangle */}
+        {/* ── Stats + Actions ── */}
         <div className="mt-6 rounded-xl border border-border bg-card shadow-sm overflow-hidden flex flex-col sm:flex-row">
-          {/* Left Column: Actions & Form */}
+
+          {/* Left Column: ELO chart + recent form (own profile) OR actions (other's profile) */}
           <div className="flex flex-col w-full sm:w-1/2 border-b sm:border-b-0 sm:border-r border-border">
-            
-            {/* Rectangle 1: Actions */}
-            <div className="flex-1 p-5 border-b border-border flex flex-col justify-center gap-3">
-              {!isMe ? (
-                <>
-                  <Button variant="outline" onClick={handleInitiateChat} className="w-full gap-2 font-semibold" disabled={actionLoading}>
-                    <MessageSquare className="h-4 w-4" /> Message
-                  </Button>
-                  {profile.open_to_challenges && (
-                    <Button onClick={() => onOpenChallengeModal?.({ id: profile.id, name: profile.name })} className="w-full gap-2 font-semibold">
-                      <Swords className="h-4 w-4" /> Challenge
-                    </Button>
-                  )}
-                </>
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-                  <p className="text-sm font-semibold text-foreground">Your Public View</p>
-                  <p className="text-xs text-center mt-1">Opponents see challenge and message actions here.</p>
-                </div>
-              )}
+
+            {/* Top: ELO Chart (show for both own and other profiles) */}
+            <div className="flex-1 border-b border-border" style={{ minHeight: '140px' }}>
+              <EloChart
+                matches={matches}
+                currentUserId={profile.id}
+                currentElo={profile.elo_rating}
+              />
             </div>
 
-            {/* Rectangle 2: Recent Form */}
-            <div className="flex-1 p-5 flex flex-col justify-center items-center bg-muted/10">
-              <p className="mb-3 text-xs font-bold text-muted-foreground uppercase tracking-wider">Recent Form</p>
-              <div className="flex items-center gap-1.5">
-                {/* Fallback mock data for elo deltas until wired up to DB */}
-                {(profile.recent_elo_deltas || ['+14', '+12', '-8', '+16', '-10']).map((delta, i) => (
-                  <span key={i} className={cn(
-                    'flex h-7 w-9 items-center justify-center rounded text-xs font-bold shadow-sm select-none',
-                    delta.startsWith('+')
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-destructive/10 text-destructive border border-destructive/20'
-                  )}>
-                    {delta}
-                  </span>
-                ))}
-              </div>
+            {/* Bottom: Recent Form strip */}
+            <div className="p-3 flex flex-col" style={{ minHeight: '56px' }}>
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-1 mb-1">Recent Form</p>
+              <RecentFormStrip
+                matches={matches}
+                currentUserId={isMe ? (currentUserId ?? '') : profile.id}
+                onViewMatch={onViewMatch}
+              />
             </div>
           </div>
 
-          {/* Rectangle 3: Match History Triangle */}
+          {/* Right Column: Match stats */}
           <div className="w-full sm:w-1/2 p-6 flex flex-col items-center justify-center bg-card">
-            
-            {/* Triangle Tip: Total Matches */}
             <div className="flex flex-col items-center mb-6">
               <span className="text-5xl font-black text-foreground tracking-tighter leading-none">{totalMatches}</span>
               <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mt-2">Total Matches</span>
             </div>
-
-            {/* Triangle Base: W / L */}
             <div className="flex justify-center gap-10 w-full mb-6">
               <div className="flex flex-col items-center">
-                <span className="text-3xl font-black text-primary leading-none">{profile.wins}</span>
+                <span className="text-3xl font-black text-primary leading-none">{wins}</span>
                 <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mt-2">Wins</span>
               </div>
               <div className="flex flex-col items-center">
-                <span className="text-3xl font-black text-destructive leading-none">{profile.losses}</span>
+                <span className="text-3xl font-black text-destructive leading-none">{losses}</span>
                 <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mt-2">Losses</span>
               </div>
             </div>
-
-            {/* Inside the Box: Win % */}
             <Badge variant="secondary" className="text-sm font-bold px-4 py-1.5 border-none shadow-sm">
               <Target className="mr-1.5 h-4 w-4" />
               {winRate}% Win Rate
@@ -443,29 +785,29 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
           </div>
         </div>
 
-        {/* Open to Challenges */}
-        <div className="flex items-center justify-between rounded-xl border border-border bg-card p-5 shadow-sm mt-4">
-          <div>
-            <h4 className="font-bold text-foreground text-sm sm:text-base">Open to Challenges</h4>
-            <p className="mt-1 text-xs sm:text-sm text-muted-foreground leading-normal">
-              Allow other players to issue direct match requests
-            </p>
+        {/* ── Open to Challenges (edit mode own profile only) ── */}
+        {isMe && isEditing && (
+          <div className="flex items-center justify-between rounded-xl border border-border bg-card p-5 shadow-sm">
+            <div>
+              <h4 className="font-bold text-foreground text-sm sm:text-base">Open to Challenges</h4>
+              <p className="mt-1 text-xs sm:text-sm text-muted-foreground leading-normal">
+                Allow other players to issue direct match requests
+              </p>
+            </div>
+            <Switch
+              checked={openToChallenges}
+              onCheckedChange={setOpenToChallenges}
+            />
           </div>
-          <Switch
-            checked={isEditing ? openToChallenges : profile.open_to_challenges}
-            onCheckedChange={setOpenToChallenges}
-            disabled={!isEditing}
-          />
-        </div>
+        )}
 
-        {/* Preferred Courts */}
-        <div className="rounded-xl border border-border bg-card p-5 shadow-sm mt-4">
+        {/* ── Preferred Courts ── */}
+        <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
           <h4 className="font-bold text-foreground text-sm sm:text-base">Preferred Courts</h4>
           <p className="mt-1 text-xs sm:text-sm text-muted-foreground leading-normal">
-            {isEditing ? 'Search and select courts, or add a new one if yours isn\'t listed.' : 'Home courts for match scheduling.'}
+            {isEditing ? "Search and select courts, or add a new one if yours isn't listed." : 'Home courts for match scheduling.'}
           </p>
 
-          {/* Selected hubs */}
           {(isEditing ? selectedHubs : profile.geographic_hubs ?? []).length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
               {(isEditing ? selectedHubs : profile.geographic_hubs ?? []).map(hub => (
@@ -485,7 +827,6 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
             </div>
           )}
 
-          {/* Search + picker — only in edit mode */}
           {isEditing && (
             <div className="mt-4 space-y-3">
               <div className="relative">
@@ -493,12 +834,11 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
                 <Input
                   value={courtSearch}
                   onChange={(e) => setCourtSearch(e.target.value)}
-                  placeholder="Search courts..."
+                  placeholder="Search courts…"
                   className="pl-8 h-9 bg-background border-border text-sm"
                 />
               </div>
 
-              {/* Court list */}
               {courtSearch.length > 0 && (
                 <div className="rounded-lg border border-border bg-background divide-y divide-border/50 max-h-48 overflow-y-auto">
                   {filteredCourts.length > 0 ? filteredCourts.map(court => {
@@ -522,8 +862,6 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
                   }) : (
                     <div className="px-3 py-2.5 text-sm text-muted-foreground">No courts found.</div>
                   )}
-
-                  {/* Add new court inline */}
                   {showAddNew && (
                     <div className="px-3 py-2.5 flex items-center justify-between gap-2 bg-muted/20">
                       <span className="text-sm text-muted-foreground truncate">
@@ -543,7 +881,6 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
                 </div>
               )}
 
-              {/* Browse all when no search */}
               {courtSearch.length === 0 && allCourts.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {allCourts.map(court => {

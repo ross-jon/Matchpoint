@@ -150,11 +150,11 @@ export default function MatchPointApp() {
 
       if (!isMounted) return
 
+      // Only redirect TO onboarding — never away from it. Leaving onboarding
+      // is handled by ProfileSetupScreen's onComplete callback.
       const needsSetup = !!error || !data?.name?.trim()
       if (needsSetup) {
         setActiveScreen('onboarding')
-      } else if (activeScreen === 'onboarding') {
-        setActiveScreen('feed')
       }
 
       setProfileChecked(true)
@@ -165,7 +165,7 @@ export default function MatchPointApp() {
     return () => {
       isMounted = false
     }
-  }, [authChecked, user, activeScreen])
+  }, [authChecked, user])
 
   // Unified Navigation Handlers
   const handleNavigate = useCallback((screen: AppScreen) => {
@@ -182,9 +182,11 @@ export default function MatchPointApp() {
   }, [])
 
   const handleAuthSuccess = useCallback(async () => {
+    // Just refresh the session — the verifyProfile effect will run automatically
+    // when user state updates and will redirect to onboarding if needed, or
+    // leave the user on feed if their profile is already complete.
     const { data } = await supabase.auth.getSession()
     setUser(data.session?.user ?? null)
-    setActiveScreen('feed')
     setAuthChecked(true)
   }, [])
 
