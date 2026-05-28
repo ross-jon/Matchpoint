@@ -16,12 +16,10 @@ import { cn } from '@/lib/utils'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const GEOGRAPHIC_HUBS = [
-  'Flat Iron Park (Sandy)',
-  'Murray Park Courts',
-  'Draper Indoor Hub',
-  'Lone Peak Park',
-]
+interface Court {
+  id: string
+  name: string
+}
 
 const timeSlots = [
   '6:00 AM','7:00 AM','8:00 AM','9:00 AM','10:00 AM','11:00 AM',
@@ -134,21 +132,31 @@ function CourtSelector({ homeProfile, awayProfile, value, onChange }: {
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const [courts, setCourts] = useState<Court[]>([])
   const ref = useRef<HTMLDivElement>(null)
 
-  const homeHubs = homeProfile?.geographic_hubs || []
-  const awayHubs = awayProfile?.geographic_hubs || []
-  const availableHubs = useMemo(() => Array.from(new Set([...homeHubs, ...awayHubs, ...GEOGRAPHIC_HUBS])), [homeHubs, awayHubs])
+  useEffect(() => {
+    const loadCourts = async () => {
+      const { data, error } = await supabase.from('courts').select('id, name').order('name')
+      if (!error && data) setCourts(data as Court[])
+    }
+    loadCourts()
+  }, [])
+
+  const courtNameMap = useMemo(() => Object.fromEntries(courts.map(court => [court.id, court.name])), [courts])
+  const homeHubs = (homeProfile?.geographic_hubs || []).map((hub) => courtNameMap[hub] ?? hub)
+  const awayHubs = (awayProfile?.geographic_hubs || []).map((hub) => courtNameMap[hub] ?? hub)
+  const availableHubs = useMemo(() => Array.from(new Set([...courts.map(court => court.name), ...homeHubs, ...awayHubs])), [courts, homeHubs, awayHubs])
   const suggestions = useMemo(() => {
     const shared = homeHubs.filter(h => awayHubs.includes(h))
     if (shared.length > 0) return shared
     if (homeHubs.length > 0) return homeHubs
-    return GEOGRAPHIC_HUBS
-  }, [homeHubs, awayHubs])
-  const filteredHubs = useMemo(() =>
-    !search.trim() ? availableHubs : availableHubs.filter(h => h.toLowerCase().includes(search.toLowerCase())),
-    [availableHubs, search]
-  )
+    return courts.map(court => court.name)
+  }, [courts, homeHubs, awayHubs])
+  const filteredHubs = useMemo(() => {
+    const trimmed = search.trim()
+    return trimmed ? availableHubs.filter(h => h.toLowerCase().includes(trimmed.toLowerCase())) : availableHubs
+  }, [availableHubs, search])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setIsOpen(false) }

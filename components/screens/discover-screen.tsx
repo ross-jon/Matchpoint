@@ -19,20 +19,16 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const GEOGRAPHIC_HUBS = [
-  'Flat Iron Park (Sandy)',
-  'Murray Park Courts',
-  'Draper Indoor Hub',
-  'Lone Peak Park',
-]
+interface Court {
+  id: string
+  name: string
+}
 
 interface DiscoverPlayer {
   id: string
   name: string
   avatar_url: string
   elo_rating: number
-  wins: number
-  losses: number
   bio: string
   open_to_challenges: boolean
   geographic_hubs: string[]
@@ -47,6 +43,7 @@ interface PlayerCardProps {
   onViewProfile: (player: DiscoverPlayer) => void
   onMessage: (player: DiscoverPlayer) => void
   currentUserHubs?: string[]
+  courtNameMap?: Record<string, string>
 }
 
 function PlayerCard({
@@ -55,6 +52,7 @@ function PlayerCard({
   onViewProfile,
   onMessage,
   currentUserHubs = [],
+  courtNameMap = {},
 }: PlayerCardProps) {
   return (
     <div className="border border-border bg-card rounded-xl p-4 transition-colors hover:border-primary/30 flex flex-col gap-3">
@@ -123,6 +121,7 @@ function PlayerCard({
       {(player.geographic_hubs?.length ?? 0) > 0 && (
         <div className="flex flex-wrap gap-1 max-h-[3.5rem] overflow-y-auto scrollbar-thin scrollbar-thumb-primary/40 scrollbar-track-slate-900/20 dark:scrollbar-track-slate-800/40 pt-0.5">
           {(player.geographic_hubs ?? []).map(hub => {
+            const label = courtNameMap[hub] ?? hub
             const shared = currentUserHubs.includes(hub)
             return (
               <Badge
@@ -136,7 +135,7 @@ function PlayerCard({
                 )}
               >
                 <MapPin className="h-2.5 w-2.5 shrink-0" />
-                <span className="truncate max-w-[120px]">{hub}</span>
+                <span className="truncate max-w-[120px]">{label}</span>
                 {shared && (
                   <span className="ml-0.5 text-[9px] font-bold uppercase tracking-wide opacity-70">
                     shared
@@ -158,10 +157,12 @@ function SuggestedPlayer({
   player,
   onChallenge,
   onViewProfile,
+  courtNameMap = {},
 }: {
   player: DiscoverPlayer
   onChallenge: (player: DiscoverPlayer) => void
   onViewProfile: (player: DiscoverPlayer) => void
+  courtNameMap?: Record<string, string>
 }) {
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-3">
@@ -187,7 +188,7 @@ function SuggestedPlayer({
           </p>
         </button>
         <p className="text-xs text-muted-foreground truncate">
-          {player.elo_rating} Elo · {player.geographic_hubs?.[0] || 'Salt Lake'}
+          {player.elo_rating} Elo · {(player.geographic_hubs?.[0] && courtNameMap[player.geographic_hubs[0]]) || player.geographic_hubs?.[0] || 'Salt Lake'}
         </p>
       </div>
       <Button
@@ -235,6 +236,7 @@ function EloRangeInput({ label, value, onChange, placeholder }: EloRangeInputPro
 interface FilterPanelProps {
   selectedHubs: string[]
   onToggleHub: (hub: string) => void
+  courts: Court[]
   eloMin: string
   eloMax: string
   onEloMinChange: (v: string) => void
@@ -248,6 +250,7 @@ interface FilterPanelProps {
 function FilterPanel({
   selectedHubs,
   onToggleHub,
+  courts,
   eloMin,
   eloMax,
   onEloMinChange,
@@ -260,8 +263,9 @@ function FilterPanel({
   const inputRef = useRef<HTMLInputElement>(null)
 
   // All hubs that match the search term (case-insensitive)
+  const courtNameMap = Object.fromEntries(courts.map(court => [court.id, court.name]))
   const searchResults = hubSearch.trim()
-    ? GEOGRAPHIC_HUBS.filter(h => h.toLowerCase().includes(hubSearch.toLowerCase()))
+    ? courts.filter(court => court.name.toLowerCase().includes(hubSearch.toLowerCase()))
     : []
 
   return (
@@ -303,7 +307,7 @@ function FilterPanel({
                   )}
                 >
                   <MapPin className="h-3 w-3 shrink-0" />
-                  {hub}
+                  {courtNameMap[hub] ?? hub}
                   {selectedHubs.includes(hub) && <X className="h-3 w-3 ml-0.5" />}
                 </button>
               ))}
@@ -334,18 +338,18 @@ function FilterPanel({
         {/* Search results dropdown */}
         {searchResults.length > 0 && (
           <div className="mt-1 rounded-md border border-border bg-popover shadow-md overflow-hidden">
-            {searchResults.map(hub => (
+            {searchResults.map(court => (
               <button
-                key={hub}
-                onClick={() => { onToggleHub(hub); setHubSearch('') }}
+                key={court.id}
+                onClick={() => { onToggleHub(court.id); setHubSearch('') }}
                 className={cn(
                   'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors hover:bg-accent',
-                  selectedHubs.includes(hub) && 'bg-primary/10 text-primary'
+                  selectedHubs.includes(court.id) && 'bg-primary/10 text-primary'
                 )}
               >
                 <MapPin className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                {hub}
-                {selectedHubs.includes(hub) && <X className="h-3 w-3 ml-auto" />}
+                {court.name}
+                {selectedHubs.includes(court.id) && <X className="h-3 w-3 ml-auto" />}
               </button>
             ))}
           </div>
@@ -363,7 +367,7 @@ function FilterPanel({
                 key={hub}
                 className="inline-flex items-center gap-1 rounded-md bg-primary/15 text-primary text-[11px] px-2 py-0.5 font-medium"
               >
-                {hub}
+                {courtNameMap[hub] ?? hub}
                 <button onClick={() => onToggleHub(hub)} aria-label={`Remove ${hub}`}>
                   <X className="h-2.5 w-2.5" />
                 </button>
@@ -407,6 +411,7 @@ interface DiscoverScreenProps {
 
 export function DiscoverScreen({ onChallenge, onViewProfile, onMessage }: DiscoverScreenProps) {
   const [players, setPlayers] = useState<DiscoverPlayer[]>([])
+  const [courts, setCourts] = useState<Court[]>([])
   const [currentUserElo, setCurrentUserElo] = useState<number | null>(null)
   const [currentUserHubs, setCurrentUserHubs] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -449,11 +454,14 @@ export function DiscoverScreen({ onChallenge, onViewProfile, onMessage }: Discov
           }
         }
 
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('id, name, avatar_url, elo_rating, wins, losses, bio, open_to_challenges, geographic_hubs')
-          .neq('id', currentUserId)
-          .order('name', { ascending: true })
+        const [courtsResult, profilesResult] = await Promise.all([
+          supabase.from('courts').select('id, name').order('name'),
+          supabase.from('profiles').select('id, name, avatar_url, elo_rating, bio, open_to_challenges, geographic_hubs').neq('id', currentUserId).order('name', { ascending: true })
+        ])
+
+        if (!courtsResult.error && courtsResult.data) setCourts(courtsResult.data as Court[])
+
+        const { data, error } = profilesResult
 
         if (error) {
           console.error('Error hydrating discovery directory lists:', error.message || error, JSON.stringify(error))
@@ -469,6 +477,8 @@ export function DiscoverScreen({ onChallenge, onViewProfile, onMessage }: Discov
 
     loadDiscoveryData()
   }, [])
+
+  const courtNameMap = Object.fromEntries(courts.map(court => [court.id, court.name]))
 
   const activeFilterCount = selectedHubs.length + (eloMin ? 1 : 0) + (eloMax ? 1 : 0)
 
@@ -591,6 +601,7 @@ export function DiscoverScreen({ onChallenge, onViewProfile, onMessage }: Discov
             onClearAll={clearAllFilters}
             activeFilterCount={activeFilterCount}
             currentUserHubs={currentUserHubs}
+            courts={courts}
           />
         )}
 
@@ -617,6 +628,7 @@ export function DiscoverScreen({ onChallenge, onViewProfile, onMessage }: Discov
                     onViewProfile={handleViewProfile}
                     onMessage={handleMessage}
                     currentUserHubs={currentUserHubs}
+                    courtNameMap={courtNameMap}
                   />
                 ))}
               </div>
@@ -652,6 +664,7 @@ export function DiscoverScreen({ onChallenge, onViewProfile, onMessage }: Discov
                         player={player}
                         onChallenge={onChallenge}
                         onViewProfile={handleViewProfile}
+                        courtNameMap={courtNameMap}
                       />
                     ))}
                   </div>

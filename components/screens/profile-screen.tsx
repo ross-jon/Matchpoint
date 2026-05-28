@@ -74,74 +74,69 @@ function EloChart({ matches, currentUserId, currentElo }: {
 }) {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null)
 
-  const sundays = useMemo(() => {
+  // Build 8 anchor timestamps: today + 7 evenly-spaced points 7 days apart going back
+  const anchorPoints = useMemo(() => {
     const now = new Date()
-    const lastSunday = new Date(now)
-    lastSunday.setDate(now.getDate() - now.getDay())
-    lastSunday.setHours(23, 59, 59, 999)
+    now.setHours(23, 59, 59, 999)
     return Array.from({ length: 8 }, (_, i) => {
-      const d = new Date(lastSunday)
-      d.setDate(lastSunday.getDate() - (7 * (7 - i)))
+      const d = new Date(now)
+      d.setDate(now.getDate() - (7 * (7 - i)))
       return d
     })
+    // index 0 = 7 weeks ago, index 7 = today
   }, [])
 
-  const rawPoints = useMemo(() => {
-    // Use score_submitted_at (match completion time) for accurate placement.
-    // Fall back to created_at only if score_submitted_at is absent.
-    const completionTime = (m: MatchRecord) =>
+  const filledPoints = useMemo((): number[] => {
+    // Completion timestamp: prefer score_submitted_at, fall back to created_at
+    const ct = (m: MatchRecord) =>
       new Date(m.score_submitted_at ?? m.created_at).getTime()
 
+    // All verified matches sorted oldest → newest
     const completed = matches
       .filter(m => m.status === 'verified')
-      .sort((a, b) => completionTime(b) - completionTime(a))
+      .sort((a, b) => ct(a) - ct(b))
 
-    // Walk newest-oldest to reconstruct historical elo from deltas
-    let rating = currentElo
-    const ratedMatches = completed.map(match => {
-      const isHome = match.home_player_id === currentUserId
-      const delta = isHome ? match.home_elo_delta : match.away_elo_delta
-      const after = rating
-      const before = delta != null ? rating - delta : rating
-      rating = before
-      return { ...match, after, before, ct: completionTime(match) }
-    })
+    if (completed.length === 0) {
+      // No matches at all — flat line at currentElo
+      return anchorPoints.map(() => currentElo)
+    }
 
-    return sundays.map(sunday => {
-      // Matches completed on or before this Sunday
-      const before = ratedMatches.filter(m => m.ct <= sunday.getTime())
-      if (before.length === 0) return null
-      // before[0] is the most recent match on or before this Sunday (sorted newest-first)
-      return before[0].after
-    })
-  }, [matches, currentUserId, currentElo, sundays])
+    // Walk newest → oldest, reconstructing the elo at each match boundary.
+    // ratedMatches[i].eloAfter  = elo immediately after match i completed
+    // ratedMatches[i].eloBefore = elo immediately before match i completed
+    // We sort newest-first for the walk, then reverse back to oldest-first.
+    const newestFirst = [...completed].reverse()
+    let runningElo = currentElo
+    const timeline: { ts: number; eloBefore: number; eloAfter: number }[] = newestFirst.map(m => {
+      const isHome = m.home_player_id === currentUserId
+      const delta = (isHome ? m.home_elo_delta : m.away_elo_delta) ?? 0
+      const eloAfter = runningElo
+      const eloBefore = runningElo - delta
+      runningElo = eloBefore
+      return { ts: ct(m), eloBefore, eloAfter }
+    }).reverse() // back to oldest-first
 
-  // Fill nulls correctly:
-  // 1. Back-fill right→left anchored to currentElo (fills trailing weeks after last match)
-  // 2. Forward-fill left→right to propagate earliest known elo (fills leading weeks before first match)
-  // This prevents early weeks from incorrectly showing currentElo.
-  const filledPoints = useMemo((): number[] => {
-    const reversed = [...rawPoints].reverse()
-    let last = currentElo
-    const backFilled = reversed
-      .map(p => { if (p !== null) { last = p; return p } return last })
-      .reverse()
-    let first: number | null = null
-    return backFilled.map(p => {
-      if (p !== null) { first = p; return p }
-      return first ?? currentElo
-    })
-  }, [rawPoints, currentElo])
+    // eloAtTime: what was the player's elo at timestamp t?
+    // - Before the first match: eloBefore of first match
+    // - After match i: eloAfter of that match (until next match fires)
+    // - After last match: currentElo
+    const eloAtTime = (t: number): number => {
+      if (t < timeline[0].ts) return timeline[0].eloBefore
+      for (let i = timeline.length - 1; i >= 0; i--) {
+        if (t >= timeline[i].ts) return timeline[i].eloAfter
+      }
+      return timeline[0].eloBefore
+    }
+
+    return anchorPoints.map(d => eloAtTime(d.getTime()))
+  }, [matches, currentUserId, currentElo, anchorPoints])
 
   const delta = filledPoints[7] - filledPoints[0]
   const trend = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat'
 
-  // Logarithmic-inspired scaling: pad tightly around actual range so small
-  // differences still show meaningful variance, but clamp a minimum band of 20pts.
   const rawMin = Math.min(...filledPoints)
   const rawMax = Math.max(...filledPoints)
   const naturalRange = rawMax - rawMin
-  // Minimum visual range = 20 pts so even flat lines have room; add 15% padding each side
   const pad = Math.max(naturalRange * 0.2, 12)
   const minElo = rawMin - pad
   const maxElo = rawMax + pad
@@ -157,10 +152,10 @@ function EloChart({ matches, currentUserId, currentElo }: {
   const areaD = `${pathD} L ${toX(7).toFixed(1)} ${H} L ${toX(0).toFixed(1)} ${H} Z`
 
   const hoveredElo = hoveredIdx !== null ? filledPoints[hoveredIdx] : null
-  const hoveredDate = hoveredIdx !== null ? sundays[hoveredIdx] : null
+  const hoveredDate = hoveredIdx !== null ? anchorPoints[hoveredIdx] : null
 
-  // Lime green palette to match app aesthetic
-  const lineColor = trend === 'down' ? 'hsl(var(--destructive))' : '#84cc16'
+  // Always lime green — direction doesn't change color
+  const LINE_COLOR = '#84cc16'
   const gradId = `eloGrad-${currentUserId.slice(0, 8)}`
 
   return (
@@ -172,13 +167,10 @@ function EloChart({ matches, currentUserId, currentElo }: {
           <span className="text-[10px] font-semibold">
             <span className="text-muted-foreground">{hoveredDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
             <span className="mx-1 text-muted-foreground/40">·</span>
-            <span className="font-black" style={{ color: lineColor }}>{hoveredElo} Elo</span>
+            <span className="font-black" style={{ color: LINE_COLOR }}>{hoveredElo} Elo</span>
           </span>
         ) : (
-          <span className={cn(
-            'text-xs font-bold flex items-center gap-1',
-            trend === 'up' ? 'text-lime-400' : trend === 'down' ? 'text-destructive' : 'text-muted-foreground'
-          )}>
+          <span className="text-xs font-bold flex items-center gap-1 text-lime-400">
             {trend === 'up' ? <TrendingUp className="h-3 w-3" /> : trend === 'down' ? <TrendingDown className="h-3 w-3" /> : <Minus className="h-3 w-3" />}
             {delta > 0 ? '+' : ''}{delta} pts (8 wks)
           </span>
@@ -188,8 +180,8 @@ function EloChart({ matches, currentUserId, currentElo }: {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full flex-1 overflow-visible" preserveAspectRatio="none">
         <defs>
           <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={lineColor} stopOpacity="0.18" />
-            <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
+            <stop offset="0%" stopColor={LINE_COLOR} stopOpacity="0.18" />
+            <stop offset="100%" stopColor={LINE_COLOR} stopOpacity="0" />
           </linearGradient>
         </defs>
 
@@ -205,14 +197,14 @@ function EloChart({ matches, currentUserId, currentElo }: {
         {/* Area fill */}
         <path d={areaD} fill={`url(#${gradId})`} />
         {/* Line */}
-        <path d={pathD} fill="none" stroke={lineColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={pathD} fill="none" stroke={LINE_COLOR} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
 
         {/* Hover vertical guide */}
         {hoveredIdx !== null && (
           <line
             x1={toX(hoveredIdx)} y1={padY}
             x2={toX(hoveredIdx)} y2={H}
-            stroke={lineColor} strokeWidth="1" strokeDasharray="3 2" opacity="0.5"
+            stroke={LINE_COLOR} strokeWidth="1" strokeDasharray="3 2" opacity="0.5"
             style={{ pointerEvents: 'none' }}
           />
         )}
@@ -231,12 +223,12 @@ function EloChart({ matches, currentUserId, currentElo }: {
               />
               {/* Outer ring on hover */}
               {isHov && (
-                <circle cx={cx} cy={cy} r="7" fill={lineColor} opacity="0.15" style={{ pointerEvents: 'none' }} />
+                <circle cx={cx} cy={cy} r="7" fill={LINE_COLOR} opacity="0.15" style={{ pointerEvents: 'none' }} />
               )}
               {/* Visible dot */}
               <circle cx={cx} cy={cy} r={isHov ? 4.5 : 2.8}
-                fill={isHov ? lineColor : 'hsl(var(--card))'}
-                stroke={lineColor}
+                fill={isHov ? LINE_COLOR : 'hsl(var(--card))'}
+                stroke={LINE_COLOR}
                 strokeWidth="2"
                 style={{ pointerEvents: 'none', transition: 'r 0.1s' }}
               />
@@ -248,11 +240,9 @@ function EloChart({ matches, currentUserId, currentElo }: {
       {/* X-axis dates */}
       <div className="flex justify-between mt-1">
         <span className="text-[9px] text-muted-foreground/60">
-          {sundays[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+          {anchorPoints[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
         </span>
-        <span className="text-[9px] text-muted-foreground/60">
-          {sundays[7].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-        </span>
+        <span className="text-[9px] font-semibold text-lime-400/70">Today</span>
       </div>
     </div>
   )
@@ -648,8 +638,9 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
 
         {/* ── Profile Header ── */}
         <div className="flex flex-col items-center text-center sm:flex-row sm:items-start sm:text-left gap-6 px-2">
-          {/* Avatar */}
-          <div className="shrink-0">
+
+          {/* Left col: Avatar + action buttons stacked beneath */}
+          <div className="shrink-0 flex flex-col items-center gap-3">
             <div className="relative">
               <Avatar className="h-28 w-28 ring-2 ring-border">
                 <AvatarImage src={isEditing ? avatarUrl : profile.avatar_url} alt={profile.name} />
@@ -676,9 +667,42 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
                 }}
               />
             </div>
+
+            {/* Message + Challenge buttons sit under the avatar */}
+            {!isMe && !isEditing && (
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={handleInitiateChat} className="gap-1.5 font-semibold">
+                  <MessageSquare className="h-3.5 w-3.5" /> Message
+                </Button>
+                <div className="relative">
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      if (profile.open_to_challenges) {
+                        onOpenChallengeModal?.({ id: profile.id, name: profile.name })
+                      }
+                    }}
+                    onMouseEnter={() => !profile.open_to_challenges && setShowChallengeTooltip(true)}
+                    onMouseLeave={() => setShowChallengeTooltip(false)}
+                    className={cn(
+                      "gap-1.5 font-semibold",
+                      !profile.open_to_challenges && "opacity-50 cursor-not-allowed"
+                    )}
+                  >
+                    <Swords className="h-3.5 w-3.5" /> Challenge
+                  </Button>
+                  {!profile.open_to_challenges && showChallengeTooltip && (
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 rounded-lg bg-popover border border-border shadow-lg text-xs text-popover-foreground whitespace-nowrap z-50">
+                      This player is not open to challenges at this time
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-popover" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Name & Bio */}
+          {/* Right col: Name / badges / bio */}
           <div className="flex-1 min-w-0 w-full pt-1">
             {isEditing ? (
               <div className="space-y-3">
@@ -761,54 +785,27 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
               </div>
             ) : (
               <>
-                <div className="flex items-center gap-2 flex-wrap justify-center sm:justify-start">
-                  <h3 className="text-2xl font-bold text-foreground tracking-tight truncate">{profile.name}</h3>
-                  <Badge className="bg-primary/10 text-primary border-none text-xs font-semibold px-2 py-0.5">
+                {/* Name */}
+                <h3 className="text-2xl font-bold text-foreground tracking-tight truncate text-center sm:text-left">
+                  {profile.name}
+                </h3>
+                {/* Elo + Rank stacked below name */}
+                <div className="mt-2 flex flex-col items-center sm:items-start gap-1.5">
+                  <Badge className="bg-primary/10 text-primary border-none text-xs font-semibold px-2.5 py-1">
                     <Trophy className="mr-1.5 h-3.5 w-3.5" />{profile.elo_rating} Elo
                   </Badge>
                   {playerRank !== null && (
-                    <Badge className="bg-lime-500/10 text-lime-400 border border-lime-400/20 text-xs font-black px-2 py-0.5 tabular-nums">
-                      #{playerRank}
+                    <Badge className="bg-lime-500/10 text-lime-400 border border-lime-400/20 text-xs font-black px-2.5 py-1 tabular-nums">
+                      Rank #{playerRank}
                     </Badge>
                   )}
                 </div>
+                {/* Bio */}
                 {profile.bio ? (
-                  <p className="mt-3 text-muted-foreground text-sm leading-relaxed">
+                  <p className="mt-3 text-muted-foreground text-sm leading-relaxed text-center sm:text-left">
                     {profile.bio}
                   </p>
                 ) : null}
-
-                {/* Actions for viewing another player (moved under the name) */}
-                {!isMe && !isEditing && (
-                  <div className="mt-3 flex gap-2 justify-center sm:justify-start">
-                    <Button variant="outline" onClick={handleInitiateChat} className="gap-2 font-semibold">
-                      <MessageSquare className="h-4 w-4" /> Message
-                    </Button>
-                    <div className="relative">
-                      <Button
-                        onClick={() => {
-                          if (profile.open_to_challenges) {
-                            onOpenChallengeModal?.({ id: profile.id, name: profile.name })
-                          }
-                        }}
-                        onMouseEnter={() => !profile.open_to_challenges && setShowChallengeTooltip(true)}
-                        onMouseLeave={() => setShowChallengeTooltip(false)}
-                        className={cn(
-                          "gap-2 font-semibold",
-                          !profile.open_to_challenges && "opacity-50 cursor-not-allowed"
-                        )}
-                      >
-                        <Swords className="h-4 w-4" /> Challenge
-                      </Button>
-                      {!profile.open_to_challenges && showChallengeTooltip && (
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 rounded-lg bg-popover border border-border shadow-lg text-xs text-popover-foreground whitespace-nowrap z-50">
-                          This player is not open to challenges at this time
-                          <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-popover" />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
               </>
             )}
           </div>
