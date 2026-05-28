@@ -40,6 +40,7 @@ interface MatchRecord {
   status: string
   scheduled_time: string | null
   created_at: string
+  score_submitted_at: string | null
 }
 
 interface Court {
@@ -71,23 +72,31 @@ function EloChart({ matches, currentUserId, currentElo }: {
   currentUserId: string
   currentElo: number
 }) {
-  // Build 8 weekly Sunday snapshots over the last ~8 weeks
-  const points = useMemo(() => {
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null)
+
+  const sundays = useMemo(() => {
     const now = new Date()
     const lastSunday = new Date(now)
     lastSunday.setDate(now.getDate() - now.getDay())
     lastSunday.setHours(23, 59, 59, 999)
-
-    const sundays = Array.from({ length: 8 }, (_, i) => {
+    return Array.from({ length: 8 }, (_, i) => {
       const d = new Date(lastSunday)
       d.setDate(lastSunday.getDate() - (7 * (7 - i)))
       return d
     })
+  }, [])
+
+  const rawPoints = useMemo(() => {
+    // Use score_submitted_at (match completion time) for accurate placement.
+    // Fall back to created_at only if score_submitted_at is absent.
+    const completionTime = (m: MatchRecord) =>
+      new Date(m.score_submitted_at ?? m.created_at).getTime()
 
     const completed = matches
       .filter(m => m.status === 'verified')
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .sort((a, b) => completionTime(b) - completionTime(a))
 
+    // Walk newest-oldest to reconstruct historical elo from deltas
     let rating = currentElo
     const ratedMatches = completed.map(match => {
       const isHome = match.home_player_id === currentUserId
@@ -95,103 +104,153 @@ function EloChart({ matches, currentUserId, currentElo }: {
       const after = rating
       const before = delta != null ? rating - delta : rating
       rating = before
-      return { ...match, after, before }
+      return { ...match, after, before, ct: completionTime(match) }
     })
 
     return sundays.map(sunday => {
-      const matchesBeforeSunday = ratedMatches.filter(m => new Date(m.created_at) <= sunday)
-      if (matchesBeforeSunday.length === 0) return null
-      return matchesBeforeSunday[0].after
+      // Matches completed on or before this Sunday
+      const before = ratedMatches.filter(m => m.ct <= sunday.getTime())
+      if (before.length === 0) return null
+      // before[0] is the most recent match on or before this Sunday (sorted newest-first)
+      return before[0].after
     })
-  }, [matches, currentUserId, currentElo])
+  }, [matches, currentUserId, currentElo, sundays])
 
-  // Fill nulls: carry forward from most recent known, backfill current elo if needed
-  const filledPoints = useMemo(() => {
-    const reversed = [...points].reverse()
-    let lastKnown = currentElo
-    const reverseFilled = reversed.map(p => {
-      if (p !== null) { lastKnown = p; return p }
-      return lastKnown
+  // Fill nulls correctly:
+  // 1. Back-fill right→left anchored to currentElo (fills trailing weeks after last match)
+  // 2. Forward-fill left→right to propagate earliest known elo (fills leading weeks before first match)
+  // This prevents early weeks from incorrectly showing currentElo.
+  const filledPoints = useMemo((): number[] => {
+    const reversed = [...rawPoints].reverse()
+    let last = currentElo
+    const backFilled = reversed
+      .map(p => { if (p !== null) { last = p; return p } return last })
+      .reverse()
+    let first: number | null = null
+    return backFilled.map(p => {
+      if (p !== null) { first = p; return p }
+      return first ?? currentElo
     })
-    return reverseFilled.reverse()
-  }, [points, currentElo])
+  }, [rawPoints, currentElo])
 
-  const minElo = Math.min(...filledPoints) - 30
-  const maxElo = Math.max(...filledPoints) + 30
+  const delta = filledPoints[7] - filledPoints[0]
+  const trend = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat'
+
+  // Logarithmic-inspired scaling: pad tightly around actual range so small
+  // differences still show meaningful variance, but clamp a minimum band of 20pts.
+  const rawMin = Math.min(...filledPoints)
+  const rawMax = Math.max(...filledPoints)
+  const naturalRange = rawMax - rawMin
+  // Minimum visual range = 20 pts so even flat lines have room; add 15% padding each side
+  const pad = Math.max(naturalRange * 0.2, 12)
+  const minElo = rawMin - pad
+  const maxElo = rawMax + pad
   const range = maxElo - minElo || 1
 
-  const W = 280, H = 100
-  const padX = 10, padY = 8
+  const W = 280, H = 96
+  const padX = 12, padY = 10
 
   const toX = (i: number) => padX + (i / 7) * (W - padX * 2)
   const toY = (elo: number) => padY + (1 - (elo - minElo) / range) * (H - padY * 2)
 
-  const pathD = filledPoints.map((elo, i) =>
-    `${i === 0 ? 'M' : 'L'} ${toX(i).toFixed(1)} ${toY(elo).toFixed(1)}`
-  ).join(' ')
-
+  const pathD = filledPoints.map((elo, i) => `${i === 0 ? 'M' : 'L'} ${toX(i).toFixed(1)} ${toY(elo).toFixed(1)}`).join(' ')
   const areaD = `${pathD} L ${toX(7).toFixed(1)} ${H} L ${toX(0).toFixed(1)} ${H} Z`
 
-  const startElo = filledPoints[0]
-  const endElo = filledPoints[7]
-  const delta = endElo - startElo
-  const trend = delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat'
+  const hoveredElo = hoveredIdx !== null ? filledPoints[hoveredIdx] : null
+  const hoveredDate = hoveredIdx !== null ? sundays[hoveredIdx] : null
 
-  // Labels: show month/day for each Sunday
-  const now = new Date()
-  const lastSunday = new Date(now)
-  lastSunday.setDate(now.getDate() - now.getDay())
-  const sundays = Array.from({ length: 8 }, (_, i) => {
-    const d = new Date(lastSunday)
-    d.setDate(lastSunday.getDate() - (7 * (7 - i)))
-    return d
-  })
+  // Lime green palette to match app aesthetic
+  const lineColor = trend === 'down' ? 'hsl(var(--destructive))' : '#84cc16'
+  const gradId = `eloGrad-${currentUserId.slice(0, 8)}`
 
   return (
     <div className="w-full h-full flex flex-col px-4 pt-3 pb-2">
-      <div className="flex items-center justify-between mb-1">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-2">
         <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Elo Over Time</span>
-        <span className={cn(
-          "text-xs font-bold flex items-center gap-1",
-          trend === 'up' ? 'text-primary' : trend === 'down' ? 'text-destructive' : 'text-muted-foreground'
-        )}>
-          {trend === 'up' ? <TrendingUp className="h-3 w-3" /> : trend === 'down' ? <TrendingDown className="h-3 w-3" /> : <Minus className="h-3 w-3" />}
-          {delta > 0 ? '+' : ''}{delta} pts (8 wks)
-        </span>
+        {hoveredIdx !== null && hoveredElo !== null && hoveredDate !== null ? (
+          <span className="text-[10px] font-semibold">
+            <span className="text-muted-foreground">{hoveredDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+            <span className="mx-1 text-muted-foreground/40">·</span>
+            <span className="font-black" style={{ color: lineColor }}>{hoveredElo} Elo</span>
+          </span>
+        ) : (
+          <span className={cn(
+            'text-xs font-bold flex items-center gap-1',
+            trend === 'up' ? 'text-lime-400' : trend === 'down' ? 'text-destructive' : 'text-muted-foreground'
+          )}>
+            {trend === 'up' ? <TrendingUp className="h-3 w-3" /> : trend === 'down' ? <TrendingDown className="h-3 w-3" /> : <Minus className="h-3 w-3" />}
+            {delta > 0 ? '+' : ''}{delta} pts (8 wks)
+          </span>
+        )}
       </div>
 
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full flex-1" preserveAspectRatio="none">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full flex-1 overflow-visible" preserveAspectRatio="none">
         <defs>
-          <linearGradient id="eloGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.25" />
-            <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity="0" />
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={lineColor} stopOpacity="0.18" />
+            <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
           </linearGradient>
         </defs>
+
+        {/* Subtle grid lines */}
+        {[0.25, 0.5, 0.75].map(frac => {
+          const gridY = padY + frac * (H - padY * 2)
+          return (
+            <line key={frac} x1={padX} y1={gridY.toFixed(1)} x2={W - padX} y2={gridY.toFixed(1)}
+              stroke="currentColor" strokeOpacity="0.06" strokeWidth="1" className="text-foreground" />
+          )
+        })}
+
         {/* Area fill */}
-        <path d={areaD} fill="url(#eloGrad)" />
+        <path d={areaD} fill={`url(#${gradId})`} />
         {/* Line */}
-        <path d={pathD} fill="none" stroke="hsl(var(--primary))" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        {/* Dots */}
-        {filledPoints.map((elo, i) => (
-          <circle key={i} cx={toX(i)} cy={toY(elo)} r="2.5"
-            fill="hsl(var(--card))" stroke="hsl(var(--primary))" strokeWidth="1.5" />
-        ))}
-        {/* Current ELO label on last point */}
-        <text
-          x={toX(7) - 2} y={toY(endElo) - 5}
-          textAnchor="end"
-          fontSize="8"
-          fill="hsl(var(--primary))"
-          fontWeight="700"
-        >{endElo}</text>
+        <path d={pathD} fill="none" stroke={lineColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+
+        {/* Hover vertical guide */}
+        {hoveredIdx !== null && (
+          <line
+            x1={toX(hoveredIdx)} y1={padY}
+            x2={toX(hoveredIdx)} y2={H}
+            stroke={lineColor} strokeWidth="1" strokeDasharray="3 2" opacity="0.5"
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
+
+        {/* Nodes */}
+        {filledPoints.map((elo, i) => {
+          const cx = toX(i)
+          const cy = toY(elo)
+          const isHov = hoveredIdx === i
+          return (
+            <g key={i}>
+              {/* Large invisible hit target */}
+              <circle cx={cx} cy={cy} r="11" fill="transparent" style={{ cursor: 'crosshair' }}
+                onMouseEnter={() => setHoveredIdx(i)}
+                onMouseLeave={() => setHoveredIdx(null)}
+              />
+              {/* Outer ring on hover */}
+              {isHov && (
+                <circle cx={cx} cy={cy} r="7" fill={lineColor} opacity="0.15" style={{ pointerEvents: 'none' }} />
+              )}
+              {/* Visible dot */}
+              <circle cx={cx} cy={cy} r={isHov ? 4.5 : 2.8}
+                fill={isHov ? lineColor : 'hsl(var(--card))'}
+                stroke={lineColor}
+                strokeWidth="2"
+                style={{ pointerEvents: 'none', transition: 'r 0.1s' }}
+              />
+            </g>
+          )
+        })}
       </svg>
 
-      {/* X-axis labels: first and last */}
-      <div className="flex justify-between mt-0.5">
-        <span className="text-[9px] text-muted-foreground">
+      {/* X-axis dates */}
+      <div className="flex justify-between mt-1">
+        <span className="text-[9px] text-muted-foreground/60">
           {sundays[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
         </span>
-        <span className="text-[9px] text-muted-foreground">
+        <span className="text-[9px] text-muted-foreground/60">
           {sundays[7].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
         </span>
       </div>
@@ -209,7 +268,7 @@ function RecentFormStrip({ matches, currentUserId, onViewMatch }: {
   const recent = useMemo(() => {
     return matches
       .filter(m => m.status === 'verified')
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .sort((a, b) => new Date(b.score_submitted_at ?? b.created_at).getTime() - new Date(a.score_submitted_at ?? a.created_at).getTime())
       .slice(0, 5)
   }, [matches])
 
@@ -222,7 +281,7 @@ function RecentFormStrip({ matches, currentUserId, onViewMatch }: {
   }
 
   return (
-    <div className="flex items-center justify-center gap-1.5 px-4 h-full">
+    <div className="flex items-center justify-center gap-2 px-4 h-full">
       {recent.map((match) => {
         const isHome = match.home_player_id === currentUserId
         const delta = isHome ? match.home_elo_delta : match.away_elo_delta
@@ -234,18 +293,23 @@ function RecentFormStrip({ matches, currentUserId, onViewMatch }: {
             onClick={() => onViewMatch?.(match.id)}
             title={`View match — ${match.scheduled_time ? new Date(match.scheduled_time).toLocaleDateString() : ''}`}
             className={cn(
-              'flex h-8 min-w-[3rem] items-center justify-center rounded px-1.5 text-xs font-bold shadow-sm select-none transition-opacity hover:opacity-80',
+              'flex h-6 min-w-[28px] items-center justify-center rounded px-1.5 text-[10px] font-bold font-mono',
+              'transition-transform hover:scale-110 hover:brightness-125 cursor-pointer',
               isWin === true
-                ? 'bg-primary text-primary-foreground'
+                ? 'bg-lime-500/15 text-lime-400 border border-lime-400/30'
                 : isWin === false
-                  ? 'bg-destructive/10 text-destructive border border-destructive/20'
-                  : 'bg-muted text-muted-foreground'
+                  ? 'bg-red-500/10 text-red-500 border border-red-500/20'
+                  : 'bg-muted/40 text-muted-foreground border border-border/40'
             )}
           >
             {delta !== null ? (delta > 0 ? `+${delta}` : `${delta}`) : '–'}
           </button>
         )
       })}
+      {/* Empty slot fill to maintain 5-slot width */}
+      {Array.from({ length: Math.max(0, 5 - recent.length) }).map((_, i) => (
+        <div key={`empty-${i}`} className="h-6 w-[28px] rounded border border-border/30 bg-muted/10 pointer-events-none" />
+      ))}
     </div>
   )
 }
@@ -261,6 +325,7 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
   const [actionLoading, setActionLoading] = useState(false)
   const [matches, setMatches]           = useState<MatchRecord[]>([])
   const [showChallengeTooltip, setShowChallengeTooltip] = useState(false)
+  const [playerRank, setPlayerRank]     = useState<number | null>(null)
 
   // Edit form state
   const [firstName, setFirstName]     = useState('')
@@ -330,13 +395,14 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
       const eightWeeksAgo = new Date()
       eightWeeksAgo.setDate(eightWeeksAgo.getDate() - 56)
 
-      const [profileResult, courtsResult, matchesResult] = await Promise.all([
+      const [profileResult, courtsResult, matchesResult, rankResult] = await Promise.all([
         supabase.from('profiles').select('*').eq('id', targetId).single(),
         supabase.from('courts').select('id, name').order('name'),
         supabase.from('matches')
-          .select('id, home_player_id, away_player_id, home_elo_delta, away_elo_delta, status, scheduled_time, created_at')
+          .select('id, home_player_id, away_player_id, home_elo_delta, away_elo_delta, status, scheduled_time, created_at, score_submitted_at')
           .or(`home_player_id.eq.${targetId},away_player_id.eq.${targetId}`)
-          .order('created_at', { ascending: false })
+          .order('created_at', { ascending: false }),
+        supabase.from('profiles').select('id, elo_rating').order('elo_rating', { ascending: false })
       ])
 
       if (profileResult.error) {
@@ -373,6 +439,11 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
 
       if (!matchesResult.error && matchesResult.data) {
         setMatches(matchesResult.data as MatchRecord[])
+      }
+
+      if (!rankResult.error && rankResult.data) {
+        const rank = rankResult.data.findIndex(p => p.id === targetId)
+        if (rank !== -1) setPlayerRank(rank + 1)
       }
 
       setLoading(false)
@@ -612,19 +683,18 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
             {isEditing ? (
               <div className="space-y-3">
                 {/* First + Last Name */}
-                <div className="grid grid-cols-2 gap-2">
-                  <Input
-                    value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
-                    placeholder="First name"
-                    className="bg-background border-border text-sm"
-                  />
-                  <Input
-                    value={lastName}
-                    onChange={(e) => setLastName(e.target.value)}
-                    placeholder="Last name"
-                    className="bg-background border-border text-sm"
-                  />
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground mb-1.5 block">Name</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wide">First</label>
+                      <Input value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="First name" className="bg-background border-border text-sm" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-muted-foreground mb-1 block uppercase tracking-wide">Last</label>
+                      <Input value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Last name" className="bg-background border-border text-sm" />
+                    </div>
+                  </div>
                 </div>
 
                 {/* Gender (private — only shown in own edit mode) */}
@@ -678,21 +748,29 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
                 </div>
 
                 {/* Bio */}
-                <Textarea
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  className="bg-background border-border text-sm focus-visible:ring-primary"
-                  placeholder="Describe your playstyle, e.g. Left-handed baseline counter-puncher, heavy topspin forehand. Available weekday evenings."
-                  rows={3}
-                />
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground mb-1.5 block">Bio</label>
+                  <Textarea
+                    value={bio}
+                    onChange={(e) => setBio(e.target.value)}
+                    className="bg-background border-border text-sm focus-visible:ring-primary"
+                    placeholder="Describe your playstyle, e.g. Left-handed baseline counter-puncher, heavy topspin forehand. Available weekday evenings."
+                    rows={3}
+                  />
+                </div>
               </div>
             ) : (
               <>
-                <div className="flex items-center gap-3 justify-center sm:justify-start">
+                <div className="flex items-center gap-2 flex-wrap justify-center sm:justify-start">
                   <h3 className="text-2xl font-bold text-foreground tracking-tight truncate">{profile.name}</h3>
                   <Badge className="bg-primary/10 text-primary border-none text-xs font-semibold px-2 py-0.5">
                     <Trophy className="mr-1.5 h-3.5 w-3.5" />{profile.elo_rating} Elo
                   </Badge>
+                  {playerRank !== null && (
+                    <Badge className="bg-lime-500/10 text-lime-400 border border-lime-400/20 text-xs font-black px-2 py-0.5 tabular-nums">
+                      #{playerRank}
+                    </Badge>
+                  )}
                 </div>
                 {profile.bio ? (
                   <p className="mt-3 text-muted-foreground text-sm leading-relaxed">
@@ -737,6 +815,7 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
         </div>
 
         {/* ── Stats + Actions ── */}
+        {!isEditing && (
         <div className="mt-6 rounded-xl border border-border bg-card shadow-sm overflow-hidden flex flex-col sm:flex-row">
 
           {/* Left Column: ELO chart + recent form (own profile) OR actions (other's profile) */}
@@ -784,6 +863,8 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
             </Badge>
           </div>
         </div>
+       
+        )}
 
         {/* ── Open to Challenges (edit mode own profile only) ── */}
         {isMe && isEditing && (
