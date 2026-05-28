@@ -481,7 +481,7 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
       if (error) throw error
       if (data) {
         setAllCourts(prev => [...prev, data as Court].sort((a, b) => a.name.localeCompare(b.name)))
-        setSelectedHubs(prev => [...prev, data.name])
+        setSelectedHubs(prev => [...prev, data.id])
         setNewCourtName('')
         setCourtSearch('')
       }
@@ -492,9 +492,9 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
     }
   }
 
-  const toggleHub = (hubName: string) => {
+  const toggleHub = (courtId: string) => {
     setSelectedHubs(prev =>
-      prev.includes(hubName) ? prev.filter(h => h !== hubName) : [...prev, hubName]
+      prev.includes(courtId) ? prev.filter(h => h !== courtId) : [...prev, courtId]
     )
   }
 
@@ -606,6 +606,8 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
   )
   const exactMatch = allCourts.some(c => c.name.toLowerCase() === courtSearch.toLowerCase().trim())
   const showAddNew = isEditing && courtSearch.trim().length > 1 && !exactMatch
+  // Map court IDs → names for display (geographic_hubs stores IDs in the DB)
+  const courtNameMap = Object.fromEntries(allCourts.map(c => [c.id, c.name]))
 
   const displayFirstName = profile.first_name || profile.name?.split(' ')[0] || ''
   const displayLastName = profile.last_name || profile.name?.split(' ').slice(1).join(' ') || ''
@@ -888,15 +890,15 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
 
           {(isEditing ? selectedHubs : profile.geographic_hubs ?? []).length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
-              {(isEditing ? selectedHubs : profile.geographic_hubs ?? []).map(hub => (
-                <span key={hub} className={cn(
+              {(isEditing ? selectedHubs : profile.geographic_hubs ?? []).map(courtId => (
+                <span key={courtId} className={cn(
                   'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium',
                   'border-primary bg-primary/10 text-primary'
                 )}>
                   <MapPin className="h-3 w-3 shrink-0" />
-                  {hub}
+                  {courtNameMap[courtId] ?? courtId}
                   {isEditing && (
-                    <button onClick={() => toggleHub(hub)} className="ml-0.5 hover:text-destructive transition-colors">
+                    <button onClick={() => toggleHub(courtId)} className="ml-0.5 hover:text-destructive transition-colors">
                       <X className="h-3 w-3" />
                     </button>
                   )}
@@ -920,11 +922,11 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
               {courtSearch.length > 0 && (
                 <div className="rounded-lg border border-border bg-background divide-y divide-border/50 max-h-48 overflow-y-auto">
                   {filteredCourts.length > 0 ? filteredCourts.map(court => {
-                    const selected = selectedHubs.includes(court.name)
+                    const selected = selectedHubs.includes(court.id)
                     return (
                       <button
                         key={court.id}
-                        onClick={() => toggleHub(court.name)}
+                        onClick={() => toggleHub(court.id)}
                         className={cn(
                           'w-full flex items-center justify-between px-3 py-2.5 text-sm text-left hover:bg-muted/50 transition-colors',
                           selected && 'bg-primary/5'
@@ -962,11 +964,11 @@ export function ProfileScreen({ targetPlayerId, onNavigateToMessages, onOpenChal
               {courtSearch.length === 0 && allCourts.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {allCourts.map(court => {
-                    const selected = selectedHubs.includes(court.name)
+                    const selected = selectedHubs.includes(court.id)
                     return (
                       <button
                         key={court.id}
-                        onClick={() => toggleHub(court.name)}
+                        onClick={() => toggleHub(court.id)}
                         className={cn(
                           'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
                           selected

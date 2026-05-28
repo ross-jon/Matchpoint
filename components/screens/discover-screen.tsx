@@ -566,8 +566,8 @@ export function DiscoverScreen({ onChallenge, onViewProfile, onMessage }: Discov
                 className="inline-flex items-center gap-1 rounded-md bg-primary/15 text-primary text-[11px] px-2 py-0.5 font-medium"
               >
                 <MapPin className="h-2.5 w-2.5" />
-                {hub}
-                <button onClick={() => toggleHub(hub)} aria-label={`Remove ${hub}`}>
+                {courtNameMap[hub] ?? hub}
+                <button onClick={() => toggleHub(hub)} aria-label={`Remove ${courtNameMap[hub] ?? hub}`}>
                   <X className="h-2.5 w-2.5" />
                 </button>
               </span>

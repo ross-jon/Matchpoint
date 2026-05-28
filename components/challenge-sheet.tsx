@@ -22,15 +22,14 @@ import {
 } from '@/components/ui/select'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Calendar as CalendarPicker } from '@/components/ui/calendar'
-import { Clock, MapPin, Send, Trophy, Calendar } from 'lucide-react'
+import { Clock, MapPin, Send, Trophy, Calendar, Search } from 'lucide-react'
 import { supabase } from '@/utils/supabase/client'
+import { cn } from '@/lib/utils'
 
-const GEOGRAPHIC_HUBS = [
-  'Flat Iron Park (Sandy)',
-  'Murray Park Courts',
-  'Draper Indoor Hub',
-  'Lone Peak Park'
-]
+interface Court {
+  id: string
+  name: string
+}
 
 interface DatabasePlayer {
   id: string
@@ -46,9 +45,9 @@ interface ChallengeSheetProps {
   onOpenChange: (open: boolean) => void
   onSubmit: (data: {
     playerId: string
-    scheduled_time: string       // ISO timestamptz, ready for DB
-    proposed_location: string    // matches DB column name
-    challenger_note: string      // matches DB column name
+    scheduled_time: string
+    proposed_location: string
+    challenger_note: string
   }) => void
 }
 
@@ -58,7 +57,6 @@ const timeSlots = [
   '6:00 PM', '7:00 PM', '8:00 PM', '9:00 PM'
 ]
 
-// Convert "7:00 AM" style slot + a date string into an ISO timestamptz
 function toISOTimestamp(date: string, timeSlot: string): string {
   if (!date) return new Date('2099-01-01T00:00:00').toISOString()
   if (!timeSlot) return new Date(`${date}T00:00:00`).toISOString()
@@ -74,8 +72,9 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined)
   const [time, setTime] = useState('')
   const [location, setLocation] = useState('')
-  const [locationQuery, setLocationQuery] = useState('')
-  const [allCourts, setAllCourts] = useState<string[]>([])
+  const [locationSearch, setLocationSearch] = useState('')
+  const [allCourts, setAllCourts] = useState<Court[]>([])
+  const [myHubs, setMyHubs] = useState<string[]>([])  // current user's court IDs
   const [customLocation, setCustomLocation] = useState('')
   const [useCustomLocation, setUseCustomLocation] = useState(false)
   const [message, setMessage] = useState('')
@@ -86,20 +85,64 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
   const maxDate = new Date(today)
   maxDate.setFullYear(maxDate.getFullYear() + 1)
 
+  // Load courts + current user's hubs whenever sheet opens
   useEffect(() => {
-    const loadCourts = async () => {
-      const { data, error } = await supabase.from('courts').select('name')
-      if (error) {
-        console.error('Error loading courts:', error)
-        return
+    if (!open) return
+    const load = async () => {
+      const [{ data: courtsData }, { data: { user } }] = await Promise.all([
+        supabase.from('courts').select('id, name').order('name'),
+        supabase.auth.getUser(),
+      ])
+      if (courtsData) setAllCourts(courtsData as Court[])
+      if (user) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('geographic_hubs')
+          .eq('id', user.id)
+          .single()
+        setMyHubs(profile?.geographic_hubs ?? [])
       }
-      setAllCourts((data ?? []).map((court) => court.name).sort((a, b) => a.localeCompare(b)))
     }
-
-    if (open) {
-      loadCourts()
-    }
+    load()
   }, [open])
+
+  // Build ID→name map
+  const courtNameMap = useMemo(
+    () => Object.fromEntries(allCourts.map(c => [c.id, c.name])),
+    [allCourts]
+  )
+
+  // Target player's court IDs (normalised from either Player shape)
+  const targetHubIds: string[] = useMemo(() => {
+    if (!player) return []
+    return 'geographic_hubs' in player ? (player.geographic_hubs ?? []) : []
+  }, [player])
+
+  // Resolve to name sets for tier logic
+  const myHubNames   = useMemo(() => myHubs.map(id => courtNameMap[id] ?? id),      [myHubs, courtNameMap])
+  const theirHubNames = useMemo(() => targetHubIds.map(id => courtNameMap[id] ?? id), [targetHubIds, courtNameMap])
+
+  // Tier 1: courts both players prefer
+  const sharedNames   = useMemo(() => myHubNames.filter(n => theirHubNames.includes(n)), [myHubNames, theirHubNames])
+  // Tier 2: courts only they prefer (not shared)
+  const theirOnlyNames = useMemo(() => theirHubNames.filter(n => !sharedNames.includes(n)), [theirHubNames, sharedNames])
+  // Suggestion tiles = shared + their-only
+  const suggestionNames = useMemo(() => [...sharedNames, ...theirOnlyNames], [sharedNames, theirOnlyNames])
+
+  // Tier 3: all other courts (search-only, not in suggestions)
+  const allCourtNames = useMemo(() => allCourts.map(c => c.name), [allCourts])
+  const searchResults = useMemo(() => {
+    const q = locationSearch.trim().toLowerCase()
+    if (!q) return []
+    // Search all courts, but put suggestions first in results
+    return allCourtNames
+      .filter(n => n.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const aScore = suggestionNames.includes(a) ? 0 : 1
+        const bScore = suggestionNames.includes(b) ? 0 : 1
+        return aScore - bScore || a.localeCompare(b)
+      })
+  }, [locationSearch, allCourtNames, suggestionNames])
 
   const selectedDateString = selectedDate ? selectedDate.toISOString().split('T')[0] : ''
   const formattedDate = selectedDate
@@ -108,22 +151,18 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
 
   const handleSubmit = async () => {
     if (!selectedDate || !player) return
-
     const resolvedLocation = useCustomLocation ? customLocation.trim() : location
-
     setIsSubmitting(true)
-
     onSubmit({
       playerId: player.id,
       scheduled_time: toISOTimestamp(selectedDateString, time),
       proposed_location: resolvedLocation || 'TBD',
       challenger_note: message,
     })
-
     setSelectedDate(undefined)
     setTime('')
     setLocation('')
-    setLocationQuery('')
+    setLocationSearch('')
     setCustomLocation('')
     setUseCustomLocation(false)
     setMessage('')
@@ -133,20 +172,10 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
 
   const isValid = !!selectedDate
 
-  const sortedLocations = useMemo(() => {
-    return [...allCourts].sort((a, b) => a.localeCompare(b))
-  }, [allCourts])
-
-  const filteredLocations = useMemo(() => {
-    const query = locationQuery.trim().toLowerCase()
-    if (!query) return sortedLocations
-    return sortedLocations.filter((loc) => loc.toLowerCase().includes(query))
-  }, [locationQuery, sortedLocations])
-
   if (!player) return null
 
-  const avatarUrl = 'avatar_url' in player ? player.avatar_url : player.avatar
-  const targetHubs = 'geographic_hubs' in player ? player.geographic_hubs : player.preferredHubs || []
+  const avatarUrl = 'avatar_url' in player ? player.avatar_url : (player as any).avatar
+  const displayElo = ('elo_rating' in player ? player.elo_rating : (player as any).elo) as number
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -165,15 +194,15 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
         <div className="mt-6 flex items-center gap-4 rounded-lg border border-border bg-secondary/30 p-4">
           <Avatar className="h-14 w-14 ring-2 ring-border">
             <AvatarImage src={avatarUrl} alt={player.name} />
-            <AvatarFallback>{player.name ? player.name.split(' ').map(n => n[0]).join('') : 'P'}</AvatarFallback>
+            <AvatarFallback>{player.name ? player.name.split(' ').map((n: string) => n[0]).join('') : 'P'}</AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-foreground truncate">{player.name}</h3>
-            <p className="text-sm text-muted-foreground">{('elo_rating' in player ? player.elo_rating : player.elo) as number} Elo</p>
-            {targetHubs.length > 0 && (
+            <p className="text-sm text-muted-foreground">{displayElo} Elo</p>
+            {theirHubNames.length > 0 && (
               <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground truncate">
                 <MapPin className="h-3 w-3 shrink-0" />
-                <span className="truncate">{targetHubs.join(', ')}</span>
+                <span className="truncate">{theirHubNames.join(', ')}</span>
               </div>
             )}
           </div>
@@ -181,7 +210,7 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
 
         {/* Challenge Form Options */}
         <div className="mt-6 space-y-5">
-          {/* Proposed Date Input */}
+          {/* Date */}
           <div>
             <label className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
               <Calendar className="h-4 w-4 text-muted-foreground" />
@@ -213,7 +242,7 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
             </Popover>
           </div>
 
-          {/* Proposed Time Input */}
+          {/* Time */}
           <div>
             <label className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
               <Clock className="h-4 w-4 text-muted-foreground" />
@@ -233,112 +262,158 @@ export function ChallengeSheet({ player, open, onOpenChange, onSubmit }: Challen
             </Select>
           </div>
 
-          {/* Location Picker + Custom Location Toggle */}
+          {/* Location */}
           <div>
             <label className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
               <MapPin className="h-4 w-4 text-muted-foreground" />
               Location <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
+
             {!useCustomLocation ? (
-              <>
-                {targetHubs.length > 0 && (
-                  <div className="mb-3 flex flex-wrap gap-2">
-                    {targetHubs.map((hub) => (
-                      <button
-                        type="button"
-                        key={hub}
-                        onClick={() => setLocation(hub)}
-                        className={
-                          `rounded-full border px-3 py-1 text-xs transition ${
-                            location === hub
-                              ? 'border-primary bg-primary text-primary-foreground'
-                              : 'border-border bg-background text-foreground hover:border-primary/80 hover:bg-primary/10'
-                          }`
-                        }
-                      >
-                        <span>{hub}</span>
-                        <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
-                          shared
-                        </span>
-                      </button>
-                    ))}
+              <div className="space-y-3">
+                {/* Suggestion tiles: shared courts (green) + their-preferred */}
+                {suggestionNames.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {suggestionNames.map(name => {
+                      const isShared = sharedNames.includes(name)
+                      const isSelected = location === name
+                      return (
+                        <button
+                          type="button"
+                          key={name}
+                          onClick={() => setLocation(isSelected ? '' : name)}
+                          className={cn(
+                            'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-all',
+                            isSelected
+                              ? isShared
+                                ? 'border-lime-500 bg-lime-500 text-white'
+                                : 'border-primary bg-primary text-primary-foreground'
+                              : isShared
+                                ? 'border-lime-500/40 bg-lime-500/10 text-lime-400 hover:bg-lime-500/20'
+                                : 'border-border bg-background text-foreground hover:border-primary/60 hover:bg-primary/10'
+                          )}
+                        >
+                          <MapPin className="h-3 w-3 shrink-0" />
+                          {name}
+                          {isShared && (
+                            <span className={cn(
+                              'rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide',
+                              isSelected ? 'bg-white/20 text-white' : 'bg-lime-500/20 text-lime-400'
+                            )}>
+                              shared
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
                   </div>
                 )}
-                <Select value={location} onValueChange={setLocation}>
-                  <SelectTrigger className="w-full border-border bg-background text-foreground">
-                    <SelectValue placeholder="Search any court or choose a shared court" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-card border-border text-foreground">
-                    <div className="px-3 py-2">
-                      <Input
-                        value={locationQuery}
-                        onChange={(e) => setLocationQuery(e.target.value)}
-                        placeholder="Search any court"
-                        className="h-9 w-full bg-background border-border text-foreground"
-                      />
-                    </div>
-                    {filteredLocations.length === 0 ? (
-                      <div className="px-3 py-2 text-sm text-muted-foreground">No matching courts found.</div>
-                    ) : (
-                      filteredLocations.map((loc) => (
-                        <SelectItem
-                          key={loc}
-                          value={loc}
-                          className="hover:bg-secondary focus:bg-secondary focus:text-foreground text-foreground cursor-pointer"
+
+                {/* Inline search for all courts */}
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={locationSearch}
+                    onChange={e => { setLocationSearch(e.target.value); if (location) setLocation('') }}
+                    placeholder="Search all courts…"
+                    className="pl-9 h-9 bg-background border-border text-foreground text-sm"
+                  />
+                  {locationSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setLocationSearch('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+
+                {/* Search results */}
+                {searchResults.length > 0 && (
+                  <div className="rounded-lg border border-border bg-background divide-y divide-border/40 max-h-44 overflow-y-auto">
+                    {searchResults.map(name => {
+                      const isShared = sharedNames.includes(name)
+                      const isTheirs = theirOnlyNames.includes(name)
+                      return (
+                        <button
+                          type="button"
+                          key={name}
+                          onClick={() => { setLocation(name); setLocationSearch('') }}
+                          className="w-full flex items-center justify-between px-3 py-2 text-sm text-left hover:bg-muted/50 transition-colors"
                         >
                           <span className="flex items-center gap-2">
-                            {loc}
-                            {targetHubs.includes(loc) && (
-                              <span className="text-xs text-primary font-medium">(shared)</span>
-                            )}
+                            <MapPin className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                            {name}
                           </span>
-                        </SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
+                          {isShared && (
+                            <span className="text-[10px] font-bold text-lime-400 uppercase tracking-wide">shared</span>
+                          )}
+                          {isTheirs && !isShared && (
+                            <span className="text-[10px] font-medium text-muted-foreground">their court</span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+                {locationSearch.trim() && searchResults.length === 0 && (
+                  <p className="text-xs text-muted-foreground px-1">No courts match "{locationSearch}"</p>
+                )}
+
+                {/* Show selected court if chosen from tiles (not search) */}
+                {location && !locationSearch && (
+                  <div className="flex items-center gap-2 text-sm text-foreground">
+                    <MapPin className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <span className="font-medium">{location}</span>
+                    <button type="button" onClick={() => setLocation('')} className="ml-auto text-xs text-muted-foreground hover:text-foreground">
+                      Clear
+                    </button>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={() => setUseCustomLocation(true)}
-                  className="mt-2 text-xs text-primary hover:underline"
+                  className="text-xs text-primary hover:underline"
                 >
                   + Enter a custom location
                 </button>
-              </>
+              </div>
             ) : (
-              <>
+              <div className="space-y-2">
                 <Input
                   value={customLocation}
-                  onChange={(e) => setCustomLocation(e.target.value)}
+                  onChange={e => setCustomLocation(e.target.value)}
                   placeholder="e.g. Liberty Park Court 3"
                   className="w-full bg-background border-border text-foreground"
                 />
                 <button
                   type="button"
                   onClick={() => { setUseCustomLocation(false); setCustomLocation('') }}
-                  className="mt-2 text-xs text-primary hover:underline"
+                  className="text-xs text-primary hover:underline"
                 >
-                  ← Pick from court hubs instead
+                  ← Pick from court list instead
                 </button>
-              </>
+              </div>
             )}
           </div>
 
-          {/* Challenge Note Textbox */}
+          {/* Message */}
           <div>
             <label className="mb-2 block text-sm font-medium text-foreground">
               Message <span className="text-muted-foreground font-normal">(optional)</span>
             </label>
             <Textarea
               value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              onChange={e => setMessage(e.target.value)}
               placeholder="Looking forward to hitting out on the courts!"
               className="min-h-[80px] resize-none bg-background border-border text-foreground placeholder-muted-foreground"
             />
           </div>
         </div>
 
-        {/* Form Submission Action Row */}
+        {/* Submit */}
         <div className="mt-8">
           <Button
             onClick={handleSubmit}

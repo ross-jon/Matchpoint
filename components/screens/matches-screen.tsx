@@ -123,6 +123,10 @@ function SectionHeader({ label, count }: { label: string; count?: number }) {
 }
 
 // ─── Court Selector ────────────────────────────────────────────────────────────
+// 3-tier system:
+//   Tier 1 (shared)      — both players prefer this court → lime green tile
+//   Tier 2 (their-only)  — only the other player prefers it → neutral tile
+//   Tier 3 (rest)        — all other courts, search-only (no pre-dumped list)
 
 function CourtSelector({ homeProfile, awayProfile, value, onChange }: {
   homeProfile?: MatchProfile
@@ -130,10 +134,8 @@ function CourtSelector({ homeProfile, awayProfile, value, onChange }: {
   value: string
   onChange: (val: string) => void
 }) {
-  const [isOpen, setIsOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [courts, setCourts] = useState<Court[]>([])
-  const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const loadCourts = async () => {
@@ -143,67 +145,148 @@ function CourtSelector({ homeProfile, awayProfile, value, onChange }: {
     loadCourts()
   }, [])
 
-  const courtNameMap = useMemo(() => Object.fromEntries(courts.map(court => [court.id, court.name])), [courts])
-  const homeHubs = (homeProfile?.geographic_hubs || []).map((hub) => courtNameMap[hub] ?? hub)
-  const awayHubs = (awayProfile?.geographic_hubs || []).map((hub) => courtNameMap[hub] ?? hub)
-  const availableHubs = useMemo(() => Array.from(new Set([...courts.map(court => court.name), ...homeHubs, ...awayHubs])), [courts, homeHubs, awayHubs])
-  const suggestions = useMemo(() => {
-    const shared = homeHubs.filter(h => awayHubs.includes(h))
-    if (shared.length > 0) return shared
-    if (homeHubs.length > 0) return homeHubs
-    return courts.map(court => court.name)
-  }, [courts, homeHubs, awayHubs])
-  const filteredHubs = useMemo(() => {
-    const trimmed = search.trim()
-    return trimmed ? availableHubs.filter(h => h.toLowerCase().includes(trimmed.toLowerCase())) : availableHubs
-  }, [availableHubs, search])
+  const courtNameMap = useMemo(
+    () => Object.fromEntries(courts.map(c => [c.id, c.name])),
+    [courts]
+  )
+  const allCourtNames = useMemo(() => courts.map(c => c.name), [courts])
 
-  useEffect(() => {
-    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setIsOpen(false) }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [])
+  // Resolve geographic_hubs (IDs) → names for each player
+  const homeNames = useMemo(
+    () => (homeProfile?.geographic_hubs || []).map(id => courtNameMap[id] ?? id),
+    [homeProfile, courtNameMap]
+  )
+  const awayNames = useMemo(
+    () => (awayProfile?.geographic_hubs || []).map(id => courtNameMap[id] ?? id),
+    [awayProfile, courtNameMap]
+  )
+
+  // Tier 1: shared by both
+  const sharedNames = useMemo(
+    () => homeNames.filter(n => awayNames.includes(n)),
+    [homeNames, awayNames]
+  )
+  // Tier 2: the other player's courts only (we show away if we're home, etc.)
+  // Since CourtSelector doesn't know which side currentUser is, we show
+  // away-only names as "their preferred" (home is the challenger)
+  const theirOnlyNames = useMemo(
+    () => awayNames.filter(n => !sharedNames.includes(n)),
+    [awayNames, sharedNames]
+  )
+  const suggestionNames = useMemo(
+    () => [...sharedNames, ...theirOnlyNames],
+    [sharedNames, theirOnlyNames]
+  )
+
+  // Search results (only when typing)
+  const searchResults = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return []
+    return allCourtNames
+      .filter(n => n.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const aScore = suggestionNames.includes(a) ? 0 : 1
+        const bScore = suggestionNames.includes(b) ? 0 : 1
+        return aScore - bScore || a.localeCompare(b)
+      })
+  }, [search, allCourtNames, suggestionNames])
 
   return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex h-10 w-full items-center justify-between rounded-lg border border-border bg-muted/40 px-3 text-sm text-foreground transition-colors hover:bg-muted/60"
-      >
-        <span className={cn('truncate', !value && 'text-muted-foreground')}>{value || 'Select location'}</span>
-        <MapPin className="h-4 w-4 shrink-0 text-muted-foreground ml-2" />
-      </button>
-      {isOpen && (
-        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-xl border border-border bg-popover shadow-xl">
-          <div className="border-b border-border/60 p-2">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search courts…" className="h-8 pl-8 text-xs" />
-            </div>
-          </div>
-          <div className="max-h-52 overflow-auto p-1">
-            {(search ? filteredHubs : suggestions).map(hub => (
-              <button key={hub} type="button" onClick={() => { onChange(hub); setIsOpen(false); setSearch('') }}
-                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs hover:bg-accent text-left">
-                <MapPin className="h-3 w-3 text-muted-foreground shrink-0" />{hub}
+    <div className="space-y-2">
+      {/* Suggestion tiles */}
+      {suggestionNames.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {suggestionNames.map(name => {
+            const isShared = sharedNames.includes(name)
+            const isSelected = value === name
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => onChange(isSelected ? '' : name)}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all',
+                  isSelected
+                    ? isShared
+                      ? 'border-lime-500 bg-lime-500 text-white'
+                      : 'border-primary bg-primary text-primary-foreground'
+                    : isShared
+                      ? 'border-lime-500/40 bg-lime-500/10 text-lime-400 hover:bg-lime-500/20'
+                      : 'border-border bg-background text-foreground hover:border-primary/50 hover:bg-primary/10'
+                )}
+              >
+                <MapPin className="h-2.5 w-2.5 shrink-0" />
+                {name}
+                {isShared && (
+                  <span className={cn(
+                    'rounded-full px-1 py-0.5 text-[8px] font-bold uppercase tracking-wide',
+                    isSelected ? 'bg-white/20 text-white' : 'bg-lime-500/20 text-lime-400'
+                  )}>
+                    shared
+                  </span>
+                )}
               </button>
-            ))}
-            {!search && suggestions.length < availableHubs.length && (
-              <>
-                <div className="px-3 py-1 text-[10px] font-semibold text-muted-foreground uppercase mt-1">All courts</div>
-                {availableHubs.filter(h => !suggestions.includes(h)).map(hub => (
-                  <button key={hub} type="button" onClick={() => { onChange(hub); setIsOpen(false); setSearch('') }}
-                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs hover:bg-accent text-left">
-                    <MapPin className="h-3 w-3 text-muted-foreground shrink-0" />{hub}
-                  </button>
-                ))}
-              </>
-            )}
-            {search && filteredHubs.length === 0 && (
-              <div className="px-3 py-4 text-center text-xs text-muted-foreground">No courts found</div>
-            )}
-          </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Inline search */}
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={search}
+          onChange={e => { setSearch(e.target.value); if (value) onChange('') }}
+          placeholder="Search all courts…"
+          className="h-9 pl-8 text-xs bg-background border-border"
+        />
+        {search && (
+          <button
+            type="button"
+            onClick={() => setSearch('')}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-base leading-none"
+          >
+            ×
+          </button>
+        )}
+      </div>
+
+      {/* Search results dropdown */}
+      {searchResults.length > 0 && (
+        <div className="rounded-lg border border-border bg-popover divide-y divide-border/40 max-h-44 overflow-y-auto shadow-md">
+          {searchResults.map(name => {
+            const isShared = sharedNames.includes(name)
+            const isTheirs = theirOnlyNames.includes(name)
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => { onChange(name); setSearch('') }}
+                className="w-full flex items-center justify-between px-3 py-2 text-xs text-left hover:bg-accent transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <MapPin className="h-3 w-3 text-muted-foreground shrink-0" />
+                  {name}
+                </span>
+                {isShared && <span className="text-[10px] font-bold text-lime-400 uppercase tracking-wide">shared</span>}
+                {isTheirs && !isShared && <span className="text-[10px] text-muted-foreground">their court</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+      {search.trim() && searchResults.length === 0 && (
+        <p className="text-xs text-muted-foreground px-1">No courts match "{search}"</p>
+      )}
+
+      {/* Selected value confirmation (when chosen from tiles) */}
+      {value && !search && (
+        <div className="flex items-center gap-2 text-xs text-foreground px-1">
+          <MapPin className="h-3 w-3 text-muted-foreground shrink-0" />
+          <span className="font-medium">{value}</span>
+          <button type="button" onClick={() => onChange('')} className="ml-auto text-muted-foreground hover:text-foreground">
+            Clear
+          </button>
         </div>
       )}
     </div>

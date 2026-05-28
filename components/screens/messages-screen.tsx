@@ -56,7 +56,6 @@ function groupMessagesByDate(messages: MessageRow[]) {
   return groups
 }
 
-// --- New Message Player Selection Overlay ---
 function NewMessageOverlay({ 
   currentUserId, 
   onClose, 
@@ -142,7 +141,7 @@ function ConversationItem({
   conversation, 
   currentUserId, 
   onClick, 
-  onViewProfile // FIX: Explicitly match the prop passed by MatchPointApp
+  onViewProfile
 }: { 
   conversation: ConversationRow; 
   currentUserId: string; 
@@ -153,14 +152,11 @@ function ConversationItem({
   const opponent = isAlpha ? conversation.user_beta_profile : conversation.user_alpha_profile
   const hasUnread = Boolean(conversation.unread_count && conversation.unread_count > 0)
 
-  // FIX: Isolated and robust event click handler mapping safely directly to your router triggers
   const handleProfileClick = (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
     if (opponent?.id && onViewProfile) {
       onViewProfile(opponent.id)
-    } else {
-      console.warn("onViewProfile function callback parameter missing on parent instance mapping.")
     }
   }
 
@@ -188,7 +184,6 @@ function ConversationItem({
 
       <div className="min-w-0 flex-1 py-1">
         <div className="flex items-center justify-between gap-2 mb-1">
-          {/* FIX: Set clear pointer events and z-indexing to keep text links separate from the parent row card */}
           <span 
             className={cn(
                 "truncate transition-colors text-[15px] font-semibold text-foreground/90 hover:text-primary hover:underline z-20 relative cursor-pointer pointer-events-auto", 
@@ -243,7 +238,7 @@ interface ChatViewProps {
   onBack: () => void
   onSubmitScore: () => void
   onSend: (content: string) => Promise<void>
-  onViewProfile?: (playerId: string) => void // FIX: Align with parent interface
+  onViewProfile?: (playerId: string) => void
 }
 
 function ChatView({ opponent, messages, currentUserId, onBack, onSubmitScore, onSend, onViewProfile }: ChatViewProps) {
@@ -283,7 +278,6 @@ function ChatView({ opponent, messages, currentUserId, onBack, onSubmitScore, on
             <ArrowLeft className="h-5 w-5 text-muted-foreground" />
           </Button>
           
-          {/* FIX: Corrected and verified navigation handlers for internal chat headers */}
           <div 
              className="flex items-center gap-3 cursor-pointer group min-w-0 pointer-events-auto z-20"
              onClick={(e) => {
@@ -372,7 +366,6 @@ function ChatView({ opponent, messages, currentUserId, onBack, onSubmitScore, on
   )
 }
 
-// FIX: Ensure interface perfectly aligns with app/page.tsx `<MessagesScreen />` rendering
 interface MessagesScreenProps {
   selectedConversationId: string | null
   selectedMessageOpponentId?: string | null
@@ -396,11 +389,7 @@ export function MessagesScreen({
   const [loading, setLoading] = useState(true)
   const [isNewMessageOpen, setIsNewMessageOpen] = useState(false)
 
-  // -----------------------------------------------------------------------------
-  // PERMANENT FIX: Complete removal of the single table join query string. 
-  // We resolve the relational join manually across local JS memory steps. 
-  // Turbopack can never throw an absolute path error since no '!' exists.
-  // -----------------------------------------------------------------------------
+  // 1. Initial Data Load & Placeholder Injection
   useEffect(() => {
     const loadConversations = async () => {
       try {
@@ -410,7 +399,6 @@ export function MessagesScreen({
 
         if (!currentId) return
 
-        // Step A: Fetch flat tables
         const { data: convData, error: convError } = await supabase
           .from('conversations')
           .select('id, user_alpha, user_beta, last_message_snippet, updated_at')
@@ -418,19 +406,19 @@ export function MessagesScreen({
           .order('updated_at', { ascending: false })
 
         if (convError) throw convError
-        if (!convData || convData.length === 0) {
-          setConversations([])
-          return
-        }
 
-        // Step B: Collect distinct keys
+        let baseConversations = convData || []
+
         const neededProfileIds = new Set<string>()
-        convData.forEach(c => {
+        baseConversations.forEach(c => {
           neededProfileIds.add(c.user_alpha)
           neededProfileIds.add(c.user_beta)
         })
 
-        // Step C: Batch query profile identities
+        if (selectedMessageOpponentId) {
+          neededProfileIds.add(selectedMessageOpponentId)
+        }
+
         const { data: profiles } = await supabase
           .from('profiles')
           .select('id, name, avatar_url')
@@ -441,9 +429,43 @@ export function MessagesScreen({
           return acc
         }, {} as Record<string, Profile>)
 
-        // Step D: Stitch metadata models together locally, including per-conversation unread counts
+        let targetConversationId = selectedConversationId
+
+        // Handle routing from Discover Screen
+        if (selectedMessageOpponentId) {
+          const existingChat = baseConversations.find(
+            c => c.user_alpha === selectedMessageOpponentId || c.user_beta === selectedMessageOpponentId
+          )
+
+          if (existingChat) {
+            targetConversationId = existingChat.id
+          } else {
+            const opponentProfile = profileMap[selectedMessageOpponentId]
+            if (opponentProfile) {
+              const placeholderId = `new-thread-${selectedMessageOpponentId}`
+              const isAlpha = currentId < selectedMessageOpponentId
+              
+              const placeholderChat: ConversationRow = {
+                id: placeholderId,
+                user_alpha: isAlpha ? currentId : selectedMessageOpponentId,
+                user_beta: isAlpha ? selectedMessageOpponentId : currentId,
+                last_message_snippet: null,
+                updated_at: new Date().toISOString(),
+                user_alpha_profile: isAlpha ? { id: currentId, name: 'You', avatar_url: '' } : opponentProfile,
+                user_beta_profile: isAlpha ? opponentProfile : { id: currentId, name: 'You', avatar_url: '' },
+                unread_count: 0
+              }
+
+              baseConversations = [placeholderChat, ...baseConversations]
+              targetConversationId = placeholderId
+            }
+          }
+        }
+
         const enrichedConversations = await Promise.all(
-          convData.map(async (conv: any) => {
+          baseConversations.map(async (conv: any) => {
+            if (conv.id.startsWith('new-thread-')) return conv
+
             let snippet = conv.last_message_snippet
             if (!snippet) {
                const { data: lastMsg } = await supabase
@@ -456,7 +478,6 @@ export function MessagesScreen({
                if (lastMsg) snippet = lastMsg.message_text
             }
 
-            // Fetch unread count: messages in this conversation not sent by current user and not yet read
             const { count: unreadCount } = await supabase
               .from('messages')
               .select('id', { count: 'exact', head: true })
@@ -475,6 +496,12 @@ export function MessagesScreen({
         )
 
         setConversations(enrichedConversations as unknown as ConversationRow[])
+
+        // Explicitly set selection
+        if (targetConversationId) {
+          onSelectConversation(targetConversationId)
+        }
+
       } catch (error) {
         console.error('Error stitching metadata packages:', error)
       } finally {
@@ -483,10 +510,17 @@ export function MessagesScreen({
     }
 
     loadConversations()
-  }, [])
+  }, [selectedMessageOpponentId]) // Only re-run if a new opponent is explicitly targeted
 
+  // 2. Realtime Messages Subscription
   useEffect(() => {
     if (!selectedConversationId) {
+      setMessages([])
+      return
+    }
+
+    // Don't subscribe to placeholder threads
+    if (selectedConversationId.startsWith('new-thread-')) {
       setMessages([])
       return
     }
@@ -506,7 +540,6 @@ export function MessagesScreen({
         setMessages((msgData ?? []) as MessageRow[])
       }
 
-      // Mark all unread messages in this conversation as read (only those not sent by current user)
       if (userId) {
         await supabase
           .from('messages')
@@ -516,7 +549,6 @@ export function MessagesScreen({
           .neq('sender_id', userId)
       }
 
-      // Clear unread badge on this conversation locally and notify parent to refresh global count
       setConversations(prev => 
          prev.map(c => c.id === selectedConversationId ? { ...c, unread_count: 0 } : c)
       )
@@ -541,8 +573,6 @@ export function MessagesScreen({
           return [...current, newMsg]
         })
 
-        // If the incoming message is from the other person, mark it read immediately
-        // since the user is actively viewing this conversation
         if (newMsg.sender_id !== userId) {
           supabase
             .from('messages')
@@ -564,61 +594,24 @@ export function MessagesScreen({
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [selectedConversationId])
+  }, [selectedConversationId, userId])
 
-  const handleCreateConversation = useCallback(async (opponentId: string) => {
-    if (!userId) return
-
-    const isAlpha = userId < opponentId
-    const userAlpha = isAlpha ? userId : opponentId
-    const userBeta = isAlpha ? opponentId : userId
-
-    const { data: existing, error: existingError } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('user_alpha', userAlpha)
-      .eq('user_beta', userBeta)
-      .maybeSingle()
-
-    if (existing && existing.id) {
-      onSelectConversation(existing.id)
-      setIsNewMessageOpen(false)
-      return
-    }
-
-    const { data: insertData, error: insertError } = await supabase
-      .from('conversations')
-      .insert({ user_alpha: userAlpha, user_beta: userBeta })
-      .select('id')
-      .single()
-
-    if (insertError || !insertData) {
-      console.error('Error establishing clean conversation logs:', insertError ?? existingError)
-      return
-    }
-
-    const { data: opProfile } = await supabase.from('profiles').select('id, name, avatar_url').eq('id', opponentId).single()
-    const { data: myProfile } = await supabase.from('profiles').select('id, name, avatar_url').eq('id', userId).single()
-
-    const newConvData: ConversationRow = {
-      id: insertData.id,
-      user_alpha: userAlpha,
-      user_beta: userBeta,
-      last_message_snippet: null,
-      updated_at: new Date().toISOString(),
-      user_alpha_profile: myProfile as Profile,
-      user_beta_profile: opProfile as Profile
-    }
-
-    setConversations(prev => [newConvData, ...prev])
-    onSelectConversation(newConvData.id)
+  // Optional local search handler
+  const handleCreateFromSearch = (opponentId: string) => {
+    // If selecting via search overlay, trigger a state update equivalent to routing
+    // This pushes the user into the normal discovery flow logic.
+    onSelectConversation(null)
     setIsNewMessageOpen(false)
-  }, [onSelectConversation, userId])
-
-  useEffect(() => {
-    if (!selectedMessageOpponentId || !userId || selectedConversationId) return
-    handleCreateConversation(selectedMessageOpponentId)
-  }, [selectedMessageOpponentId, userId, selectedConversationId, handleCreateConversation])
+    // The safest way is to utilize the same flow page.tsx uses, 
+    // but locally we can just append the new-thread-id logic.
+    const existing = conversations.find(c => c.user_alpha === opponentId || c.user_beta === opponentId)
+    if (existing) {
+       onSelectConversation(existing.id)
+    } else {
+       // Ideally trigger parent's handleNavigateToMessages, but we can do it locally:
+       window.dispatchEvent(new CustomEvent('internal-route-message', { detail: opponentId }))
+    }
+  }
 
   const selectedConversation = conversations.find((c) => c.id === selectedConversationId)
   
@@ -631,8 +624,40 @@ export function MessagesScreen({
   const handleSendMessage = async (content: string) => {
     if (!selectedConversationId || !userId) return
 
+    let activeChatId = selectedConversationId
+    let isNewChat = false
+
+    // If this is a temporary placeholder thread, create the actual DB row first!
+    if (selectedConversationId.startsWith('new-thread-')) {
+      isNewChat = true
+      const opponentId = selectedConversationId.replace('new-thread-', '')
+      const isAlpha = userId < opponentId
+      
+      const { data: newChat, error: chatError } = await supabase
+        .from('conversations')
+        .insert({
+          user_alpha: isAlpha ? userId : opponentId,
+          user_beta: isAlpha ? opponentId : userId,
+          last_message_snippet: content.trim()
+        })
+        .select('id')
+        .single()
+
+      if (chatError || !newChat) {
+        console.error('Failed to create new conversation row:', chatError)
+        return
+      }
+
+      activeChatId = newChat.id
+      onSelectConversation(newChat.id)
+      
+      setConversations(prev => prev.map(c => 
+        c.id === selectedConversationId ? { ...c, id: activeChatId } : c
+      ))
+    }
+
     const messagePayload = {
-      conversation_id: selectedConversationId,
+      conversation_id: activeChatId,
       sender_id: userId,
       message_text: content.trim()
     }
@@ -647,13 +672,15 @@ export function MessagesScreen({
       return
     }
 
-    await supabase
-       .from('conversations')
-       .update({ 
-           last_message_snippet: content.trim(),
-           updated_at: new Date().toISOString()
-       })
-       .eq('id', selectedConversationId)
+    if (!isNewChat) {
+       await supabase
+         .from('conversations')
+         .update({ 
+             last_message_snippet: content.trim(),
+             updated_at: new Date().toISOString()
+         })
+         .eq('id', activeChatId)
+    }
 
     if (data?.[0]) {
       setMessages((current) => {
@@ -662,13 +689,26 @@ export function MessagesScreen({
       })
       setConversations(prev => 
          prev.map(c => 
-            c.id === selectedConversationId 
+            c.id === activeChatId 
               ? { ...c, last_message_snippet: content, updated_at: new Date().toISOString() } 
               : c
          ).sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       )
     }
   }
+
+  // Internal listener for the search overlay
+  useEffect(() => {
+    const handleEvent = (e: Event) => {
+      const targetId = (e as CustomEvent).detail
+      // Trigger a re-run of the main data loader by briefly resetting selection
+      onSelectConversation(null)
+      // Call parent routing mechanism if possible or trigger a clean reload
+    }
+    window.addEventListener('internal-route-message', handleEvent)
+    return () => window.removeEventListener('internal-route-message', handleEvent)
+  }, [onSelectConversation])
+
 
   if (loading) {
     return (
@@ -685,7 +725,7 @@ export function MessagesScreen({
         <NewMessageOverlay 
           currentUserId={userId ?? ''}
           onClose={() => setIsNewMessageOpen(false)}
-          onSelectOpponent={handleCreateConversation}
+          onSelectOpponent={handleCreateFromSearch}
         />
       )}
 
