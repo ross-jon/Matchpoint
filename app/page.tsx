@@ -19,6 +19,10 @@ export default function MatchPointApp() {
   // Navigation & UI State
   type AppScreen = Screen | 'onboarding'
   const [activeScreen, setActiveScreen] = useState<AppScreen>('feed')
+  
+  // Basic routing memory to make the "Back" button smarter
+  const [previousScreen, setPreviousScreen] = useState<AppScreen>('feed') 
+  
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null)
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null)
   const [selectedMessageOpponentId, setSelectedMessageOpponentId] = useState<string | null>(null)
@@ -71,10 +75,6 @@ export default function MatchPointApp() {
     let isMounted = true
 
     const loadUnreadMessages = async (userId: string) => {
-      // Don't re-query while the user is on the messages screen — they are
-      // actively reading and we manage the count locally to avoid a race where
-      // the DB UPDATE (marking is_read=true) fires this listener before the
-      // write fully commits, briefly restoring a stale non-zero count.
       if (activeScreenRef.current === 'messages') return
 
       const messageCountResult = await supabase
@@ -124,7 +124,7 @@ export default function MatchPointApp() {
     }
   }, [user?.id])
 
-  const notifications = 2 // System notifications Placeholder
+  const notifications = 2 
   const pendingChallenges = matchChallenges.filter(
     c => c.status === 'pending' && c.challengedId === 'current'
   ).length
@@ -150,8 +150,6 @@ export default function MatchPointApp() {
 
       if (!isMounted) return
 
-      // Only redirect TO onboarding — never away from it. Leaving onboarding
-      // is handled by ProfileSetupScreen's onComplete callback.
       const needsSetup = !!error || !data?.name?.trim()
       if (needsSetup) {
         setActiveScreen('onboarding')
@@ -169,8 +167,9 @@ export default function MatchPointApp() {
 
   // Unified Navigation Handlers
   const handleNavigate = useCallback((screen: AppScreen) => {
+    setPreviousScreen(activeScreenRef.current) // Store where we came from
     setActiveScreen(screen)
-    setSelectedPlayerId(null) // Crucial: Wipes target profile memory on explicit core menu clicks
+    setSelectedPlayerId(null)
     if (screen !== 'messages') {
       setSelectedConversationId(null)
       setSelectedMessageOpponentId(null)
@@ -178,13 +177,11 @@ export default function MatchPointApp() {
   }, [])
 
   const handleNavigateToMatches = useCallback(() => {
+    setPreviousScreen(activeScreen)
     setActiveScreen('matches')
-  }, [])
+  }, [activeScreen])
 
   const handleAuthSuccess = useCallback(async () => {
-    // Just refresh the session — the verifyProfile effect will run automatically
-    // when user state updates and will redirect to onboarding if needed, or
-    // leave the user on feed if their profile is already complete.
     const { data } = await supabase.auth.getSession()
     setUser(data.session?.user ?? null)
     setAuthChecked(true)
@@ -195,10 +192,11 @@ export default function MatchPointApp() {
   }, [])
 
   const handleNavigateToMessages = useCallback((playerId?: string) => {
+    setPreviousScreen(activeScreen)
     setSelectedConversationId(null)
     setSelectedMessageOpponentId(playerId ?? null)
     setActiveScreen('messages')
-  }, [])
+  }, [activeScreen])
 
   // Challenge Submissions
   const handleOpenChallenge = useCallback((player: any) => {
@@ -301,10 +299,12 @@ export default function MatchPointApp() {
                 return (
                   <FeedScreen 
                     onViewProfile={(id) => {
+                      setPreviousScreen('feed')
                       setSelectedPlayerId(id)
                       setActiveScreen('profile')
                     }} 
                     onViewMatch={(id) => {
+                      setPreviousScreen('feed')
                       setSelectedMatchId(id)
                       setActiveScreen('match-detail')
                     }}
@@ -320,8 +320,9 @@ export default function MatchPointApp() {
                 return (
                   <MatchDetailScreen
                     matchId={selectedMatchId}
-                    onBack={() => setActiveScreen('feed')}
+                    onBack={() => setActiveScreen(previousScreen !== 'match-detail' ? previousScreen : 'feed')}
                     onViewProfile={(id) => {
+                      setPreviousScreen('match-detail')
                       setSelectedPlayerId(id)
                       setActiveScreen('profile')
                     }}
@@ -331,9 +332,15 @@ export default function MatchPointApp() {
                 return (
                   <LeaderboardScreen 
                     onViewProfile={(id) => { 
+                      setPreviousScreen('leaderboard')
                       setSelectedPlayerId(id)
                       setActiveScreen('profile') 
                     }} 
+                    onViewMatch={(id) => {
+                      setPreviousScreen('leaderboard')
+                      setSelectedMatchId(id)
+                      setActiveScreen('match-detail')
+                    }}
                   />
                 )
               case 'discover':
@@ -341,6 +348,7 @@ export default function MatchPointApp() {
                   <DiscoverScreen
                     onChallenge={handleOpenChallenge}
                     onViewProfile={(player) => {
+                      setPreviousScreen('discover')
                       setSelectedPlayerId(player.id)
                       setActiveScreen('profile')
                     }}
@@ -356,6 +364,7 @@ export default function MatchPointApp() {
                     onNavigateToMatches={handleNavigateToMatches}
                     onMessagesRead={handleMessagesRead}
                     onViewProfile={(id) => {
+                      setPreviousScreen('messages')
                       setSelectedPlayerId(id)
                       setActiveScreen('profile')
                     }}
@@ -366,11 +375,17 @@ export default function MatchPointApp() {
                   <ProfileScreen 
                     targetPlayerId={selectedPlayerId} 
                     onNavigateToMessages={(conversationId) => {
+                      setPreviousScreen('profile')
                       setSelectedConversationId(conversationId)
                       setActiveScreen('messages')
                     }}
                     onOpenChallengeModal={(player) => {
                       handleOpenChallenge(player)
+                    }}
+                    onViewMatch={(id) => {
+                      setPreviousScreen('profile')
+                      setSelectedMatchId(id)
+                      setActiveScreen('match-detail')
                     }}
                   />
                 )

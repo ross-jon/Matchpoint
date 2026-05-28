@@ -1,10 +1,16 @@
 'use client'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import { supabase } from '@/utils/supabase/client'
-import { useEffect, useState } from 'react'
-import { TrendingUp, TrendingDown } from 'lucide-react'
+import { useEffect, useState, useMemo } from 'react'
+import { Search, Loader2 } from 'lucide-react'
+import { cn } from '@/lib/utils'
+
+type MatchForm = {
+  delta: number
+  matchId: string
+}
 
 type LeaderboardPlayer = {
   id: string
@@ -13,173 +19,236 @@ type LeaderboardPlayer = {
   elo: number
   wins: number
   losses: number
-  streakCount: number
-  streakType: 'win' | 'loss'
-  isInactive: boolean
-}
-
-interface PlayerRowProps {
-  player: LeaderboardPlayer
-  rank: number
-  previousRank?: number
-  onViewProfile: (playerId: string) => void // ◄ Dynamic navigation handler context link
-}
-
-function PlayerRow({ player, rank, previousRank, onViewProfile }: PlayerRowProps) {
-  const isTop3 = rank <= 3
-
-  return (
-    <div
-      className={`flex flex-col gap-4 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/30 sm:flex-row sm:items-center ${
-        player.isInactive ? 'opacity-50' : ''
-      }`}
-    >
-      <div className="flex items-center gap-3">
-        <div
-          className={`flex h-9 w-9 items-center justify-center rounded-full font-bold ${
-            isTop3 ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'
-          }`}
-        >
-          {rank}
-        </div>
-        <Avatar className="h-12 w-12 shrink-0">
-          <AvatarImage src={player.avatar} alt={player.name} />
-          <AvatarFallback>{player.name ? player.name.split(' ').map(n => n[0]).join('') : 'P'}</AvatarFallback>
-        </Avatar>
-        <div className="min-w-0">
-          {/* 🛠️ Name converted to an interactive button link component frame */}
-          <button
-            onClick={() => onViewProfile(player.id)}
-            className="text-left font-semibold text-foreground hover:text-primary hover:underline transition-colors block truncate max-w-full"
-          >
-            {player.name}
-          </button>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
-            <span>{player.wins + player.losses} matches</span>
-            <span>•</span>
-            <span className="capitalize">{player.streakType} streak ({player.streakCount})</span>
-          </div>
-        </div>
-      </div>
-
-        <div className="grid flex-1 grid-cols-2 gap-4 sm:grid-cols-3">
-          <div className="text-center">
-            <p className="text-sm font-semibold text-foreground">{player.wins}</p>
-            <p className="text-xs text-muted-foreground">Wins</p>
-          </div>
-          <div className="text-center">
-            <p className="text-sm font-semibold text-foreground">{player.losses}</p>
-            <p className="text-xs text-muted-foreground">Losses</p>
-          </div>
-          <div className="text-center">
-            <p className="text-sm font-semibold text-foreground">{player.streakCount}</p>
-            <p className="text-xs text-muted-foreground">Streak</p>
-          </div>
-        </div>
-
-      <div className="text-right">
-        <div className="text-xl font-bold text-foreground">{player.elo}</div>
-        <div className="text-xs text-muted-foreground">Elo</div>
-      </div>
-    </div>
-  )
+  currentRank: number
+  trendAmount: number
+  trendDirection: 'up' | 'down' | 'flat'
+  recentForm: MatchForm[]
 }
 
 interface LeaderboardScreenProps {
-  onViewProfile: (playerId: string) => void // ◄ Passed down from main root layout container
+  onViewProfile: (playerId: string) => void
+  onViewMatch?: (matchId: string) => void
 }
 
-export function LeaderboardScreen({ onViewProfile }: LeaderboardScreenProps) {
+export function LeaderboardScreen({ onViewProfile, onViewMatch }: LeaderboardScreenProps) {
   const [playersData, setPlayersData] = useState<LeaderboardPlayer[]>([])
+  const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const fetchPlayers = async () => {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('id, name, avatar_url, elo_rating, wins, losses, streak_count, streak_type')
-        .order('elo_rating', { ascending: false })
+    const fetchLeaderboardData = async () => {
+      const [profilesRes, matchesRes] = await Promise.all([
+        supabase
+          .from('profiles')
+          .select('id, name, avatar_url, elo_rating, previous_week_rank')
+          .order('elo_rating', { ascending: false }),
+        supabase
+          .from('matches')
+          .select('id, home_player_id, away_player_id, home_elo_delta, away_elo_delta')
+          .eq('status', 'verified')
+          .order('score_submitted_at', { ascending: false })
+      ])
 
-      if (error) {
-        console.error('Error fetching leaderboard:', error)
+      if (profilesRes.error || matchesRes.error) {
+        console.error('Error fetching leaderboard data:', profilesRes.error || matchesRes.error)
         setLoading(false)
         return
       }
 
-      const mappedData: LeaderboardPlayer[] = (data ?? []).map((profile: any) => ({
-        id: profile.id,
-        name: profile.name,
-        avatar: profile.avatar_url,
-        elo: profile.elo_rating,
-        wins: profile.wins,
-        losses: profile.losses,
-        streakCount: profile.streak_count,
-        streakType: profile.streak_type || 'win',
-        isInactive: profile.is_inactive ?? false,
-      }))
+      const matches = matchesRes.data || []
+
+      const mappedData: LeaderboardPlayer[] = (profilesRes.data || []).map((profile, index) => {
+        const currentRank = index + 1
+        const previousRank = profile.previous_week_rank
+
+        let trendAmount = 0
+        let trendDirection: 'up' | 'down' | 'flat' = 'flat'
+        
+        if (previousRank) {
+          const difference = previousRank - currentRank
+          if (difference > 0) {
+            trendAmount = difference
+            trendDirection = 'up'
+          } else if (difference < 0) {
+            trendAmount = Math.abs(difference)
+            trendDirection = 'down'
+          }
+        }
+
+        let wins = 0
+        let losses = 0
+        const recentForm: MatchForm[] = []
+
+        for (const match of matches) {
+          const isHome = match.home_player_id === profile.id
+          const isAway = match.away_player_id === profile.id
+
+          if (isHome || isAway) {
+            const delta = isHome ? match.home_elo_delta : match.away_elo_delta
+            if (delta !== null) {
+              if (delta > 0) wins++
+              else if (delta < 0) losses++
+              
+              if (recentForm.length < 5) {
+                recentForm.push({ delta, matchId: match.id })
+              }
+            }
+          }
+        }
+
+        return {
+          id: profile.id,
+          name: profile.name,
+          avatar: profile.avatar_url,
+          elo: profile.elo_rating,
+          wins,
+          losses,
+          currentRank,
+          trendAmount,
+          trendDirection,
+          recentForm: recentForm.reverse()
+        }
+      })
 
       setPlayersData(mappedData)
       setLoading(false)
     }
 
-    fetchPlayers()
+    fetchLeaderboardData()
   }, [])
 
-  const activePlayers = playersData.filter((p) => !p.isInactive)
-  const inactivePlayers = playersData.filter((p) => p.isInactive)
-
-  const previousRanks: Record<string, number> = {}
+  const filteredPlayers = useMemo(() => {
+    if (!searchQuery.trim()) return playersData
+    return playersData.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()))
+  }, [playersData, searchQuery])
 
   return (
-    <div className="min-h-screen pb-24 md:pb-8">
-      <header className="border-b border-border bg-card">
-        <div className="px-4 py-4 md:px-6">
-          <h2 className="text-xl font-bold text-foreground">Leaderboard</h2>
-          <p className="text-sm text-muted-foreground">Salt Lake Tennis Ladder Rankings</p>
+    <div className="min-h-screen pb-24 md:pb-8 bg-background">
+      
+      {/* STICKY HEADER & COLUMNS */}
+      <header className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur-sm pt-4 pb-2 px-4 md:px-6 shadow-sm">
+        <div className="mx-auto max-w-4xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-bold text-foreground tracking-tight">Leaderboard Rankings</h2>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-widest mt-0.5">
+                Global Ladder ({playersData.length} Active)
+              </p>
+            </div>
+            
+            <div className="relative w-full sm:w-64 shrink-0">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Find a player..."
+                className="pl-9 h-10 bg-card/50 border-border/60 focus-visible:ring-lime-500/30 rounded-lg text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Sticky Column Labels (Aligned with the thicker bands below) */}
+          <div className="flex items-center gap-4 md:gap-6 px-4 md:px-5 pr-5 pt-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            <div className="w-10 text-center shrink-0">Rank</div>
+            <div className="w-10 text-center shrink-0">Trend</div>
+            <div className="hidden sm:block w-12 shrink-0"></div> {/* Avatar spacer */}
+            <div className="flex-1 min-w-0">Player</div>
+            <div className="hidden md:flex min-w-[150px] shrink-0 justify-end">Recent Form</div>
+            <div className="text-right shrink-0 min-w-[5rem] sm:min-w-[7rem]">Rating</div>
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl p-4 md:p-6">
-        <section>
-          <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Active Players
-          </h3>
+      {/* LEADERBOARD LIST */}
+      <main className="mx-auto max-w-4xl p-4 md:p-6 space-y-3">
+        {loading ? (
+          <div className="flex justify-center p-12">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        ) : filteredPlayers.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-border/60 p-8 text-center text-sm text-muted-foreground">
+            No players found matching "{searchQuery}"
+          </div>
+        ) : (
+          filteredPlayers.map((player) => {
+            const isTop3 = player.currentRank <= 3
+            // Fallback for hot-reloading state safety
+            const safeRecentForm = player.recentForm || []
 
-          {loading ? (
-            <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted-foreground">
-              Loading leaderboard...
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {activePlayers.map((player, index) => (
-                <PlayerRow
-                  key={player.id}
-                  player={player}
-                  rank={index + 1}
-                  previousRank={previousRanks[player.id]}
-                  onViewProfile={onViewProfile}
-                />
-              ))}
-            </div>
-          )}
-        </section>
+            return (
+              <div
+                key={player.id}
+                className={cn(
+                  "flex items-center gap-4 md:gap-6 p-4 md:p-5 pr-5 rounded-xl border transition-colors",
+                  isTop3 
+                    ? "border-lime-400/40 bg-lime-500/10 shadow-sm" 
+                    : "border-border/60 bg-card hover:bg-muted/30"
+                )}
+              >
+                {/* 1. Rank */}
+                <div className={cn(
+                  "w-10 text-center font-black text-xl md:text-2xl shrink-0", 
+                  isTop3 ? "text-lime-400" : "text-muted-foreground"
+                )}>
+                  #{player.currentRank}
+                </div>
 
-        {inactivePlayers.length > 0 && (
-          <section className="mt-8">
-            <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Inactive (21+ days)
-            </h3>
-            <div className="space-y-2">
-              {inactivePlayers.map((player, index) => (
-                <PlayerRow 
-                  key={player.id} 
-                  player={player} 
-                  rank={activePlayers.length + index + 1} 
-                  onViewProfile={onViewProfile}
-                />
-              ))}
-            </div>
-          </section>
+                {/* 2. Trend */}
+                <div className="w-10 text-center text-xs font-bold shrink-0">
+                  {player.trendDirection === 'up' && <span className="text-lime-400">↑{player.trendAmount}</span>}
+                  {player.trendDirection === 'down' && <span className="text-red-500">↓{player.trendAmount}</span>}
+                  {player.trendDirection === 'flat' && <span className="text-muted-foreground opacity-50">—</span>}
+                </div>
+
+                {/* 3. Avatar (Increased Size) */}
+                <Avatar className="h-12 w-12 shrink-0 border-2 border-background shadow-sm hidden sm:block">
+                  <AvatarImage src={player.avatar} alt={player.name} />
+                  <AvatarFallback className="text-sm bg-muted text-muted-foreground">{player.name[0]}</AvatarFallback>
+                </Avatar>
+
+                {/* 4. Name & Record (Increased text sizing & layout) */}
+                <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-3">
+                  <button
+                    onClick={() => onViewProfile(player.id)}
+                    className="text-left font-bold text-base md:text-xl text-foreground truncate hover:text-lime-300 transition-colors"
+                  >
+                    {player.name}
+                  </button>
+                  <span className="text-sm font-bold text-muted-foreground shrink-0 uppercase tracking-widest">
+                    ({player.wins}-{player.losses})
+                  </span>
+                </div>
+
+                {/* 5. Clickable Recent Form Guide */}
+                <div className="hidden md:flex items-center justify-end gap-2 min-w-[150px] shrink-0">
+                  {safeRecentForm.map((item, i) => (
+                    <button 
+                      key={i}
+                      onClick={() => onViewMatch?.(item.matchId)}
+                      title="View Match Details"
+                      className={cn(
+                        "flex items-center justify-center h-6 min-w-[28px] px-1.5 rounded text-[10px] font-bold font-mono transition-transform hover:scale-110 hover:brightness-125 cursor-pointer",
+                        item.delta >= 0 
+                          ? "bg-lime-500/15 text-lime-400 border border-lime-400/30" 
+                          : "bg-red-500/10 text-red-500 border border-red-500/20"
+                      )}
+                    >
+                      {item.delta > 0 ? '+' : ''}{item.delta}
+                    </button>
+                  ))}
+                  {/* Fill empty spots safely */}
+                  {Array.from({ length: Math.max(0, 5 - safeRecentForm.length) }).map((_, i) => (
+                    <div key={`empty-${i}`} className="h-6 w-[28px] rounded border border-border/40 bg-muted/10 pointer-events-none" />
+                  ))}
+                </div>
+
+                {/* 6. Rating (Increased Size) */}
+                <div className="text-right shrink-0 min-w-[5rem] sm:min-w-[7rem]">
+                  <span className="text-2xl md:text-3xl font-black text-foreground tracking-tighter">{player.elo}</span>
+                </div>
+              </div>
+            )
+          })
         )}
       </main>
     </div>
