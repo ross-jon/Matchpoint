@@ -212,29 +212,37 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
   return (
     <article className="rounded-2xl border border-border bg-card shadow-sm overflow-hidden text-foreground">
       
-      {/* HEADER: Social Context */}
+      {/* HEADER: Social Context[cite: 1] */}
       <div className="p-5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex -space-x-2">
-            <Avatar className="h-10 w-10 border-2 border-card shadow-sm cursor-pointer hover:z-10" onClick={() => onViewProfile?.(match.home_player.id)}>
-              <AvatarImage src={match.home_player?.avatar_url} />
-              <AvatarFallback>{match.home_player?.name?.[0]}</AvatarFallback>
-            </Avatar>
-            <Avatar className="h-10 w-10 border-2 border-card shadow-sm cursor-pointer hover:z-10" onClick={() => onViewProfile?.(match.away_player.id)}>
-              <AvatarImage src={match.away_player?.avatar_url} />
-              <AvatarFallback>{match.away_player?.name?.[0]}</AvatarFallback>
-            </Avatar>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div 
+              className="flex items-center gap-1.5 cursor-pointer group" 
+              onClick={() => onViewProfile?.(match.home_player.id)}
+            >
+              <Avatar className="h-7 w-7 border border-border/50 shadow-sm transition-transform group-hover:scale-105">
+                <AvatarImage src={match.home_player?.avatar_url} />
+                <AvatarFallback className="text-[10px]">{match.home_player?.name?.[0]}</AvatarFallback>
+              </Avatar>
+              <span className="text-sm font-semibold group-hover:underline">{match.home_player?.name}</span>
+            </div>
+            
+            <span className="text-sm text-muted-foreground font-normal">with</span>
+            
+            <div 
+              className="flex items-center gap-1.5 cursor-pointer group" 
+              onClick={() => onViewProfile?.(match.away_player.id)}
+            >
+              <Avatar className="h-7 w-7 border border-border/50 shadow-sm transition-transform group-hover:scale-105">
+                <AvatarImage src={match.away_player?.avatar_url} />
+                <AvatarFallback className="text-[10px]">{match.away_player?.name?.[0]}</AvatarFallback>
+              </Avatar>
+              <span className="text-sm font-semibold group-hover:underline">{match.away_player?.name}</span>
+            </div>
           </div>
-          <div>
-            <h3 className="text-sm font-semibold flex items-center gap-1.5">
-              <span className="cursor-pointer hover:underline" onClick={() => onViewProfile?.(match.home_player.id)}>{match.home_player?.name}</span>
-              <span className="text-muted-foreground font-normal">with</span>
-              <span className="cursor-pointer hover:underline" onClick={() => onViewProfile?.(match.away_player.id)}>{match.away_player?.name}</span>
-            </h3>
-            <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-              {match.proposed_location} <span className="opacity-50">•</span> {timeAgo(match.score_submitted_at)}
-            </p>
-          </div>
+          <p className="text-xs text-muted-foreground flex items-center gap-1">
+            {match.proposed_location} <span className="opacity-50">•</span> {timeAgo(match.score_submitted_at)}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground bg-secondary/50 px-2 py-1 rounded-full">Ranked</span>
@@ -242,7 +250,7 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
         </div>
       </div>
 
-      {/* BODY: Strava-Style Grid Layout */}
+      {/* BODY: Strava-Style Grid Layout[cite: 1] */}
       <div className="px-5 pb-5">
         <div 
           onClick={() => onViewMatch?.(match.id)}
@@ -251,9 +259,9 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
           {/* Col 1: Player Context & Scores */}
           <div className="flex flex-col bg-card/50">
             {/* Home Player Row */}
-            <div className="flex items-stretch border-b border-border/50">
+            <div className="flex items-stretch border-b border-border/50 w-full">
               {/* Player Info (Darker Background) */}
-              <div className="flex-1 flex items-center gap-2.5 p-3 pl-3 bg-background/50">
+              <div className="w-1/2 flex items-center gap-2.5 p-3 pl-3 bg-background/50 min-w-0">
                 <div className="w-3 flex justify-center shrink-0">
                    {homeWon && <svg className="h-3 w-3 text-lime-400 fill-current" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" /></svg>}
                 </div>
@@ -261,20 +269,22 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
                   <AvatarImage src={match.home_player?.avatar_url} />
                   <AvatarFallback className="text-[10px]">{match.home_player?.name?.[0]}</AvatarFallback>
                 </Avatar>
-                <span className={cn("font-semibold text-sm truncate", homeWon ? "text-foreground" : "text-muted-foreground")}>
-                  {match.home_player.name}
-                </span>
-                <span className={cn("ml-auto text-xs font-bold text-right shrink-0 min-w-[2.5rem]", (match.home_elo_delta || 0) >= 0 ? "text-lime-400" : "text-red-500")}>
+                <div className="flex flex-1 items-center min-w-0">
+                  <span className={cn("font-semibold text-sm truncate block", homeWon ? "text-foreground" : "text-muted-foreground")}>
+                    {match.home_player.name}
+                  </span>
+                </div>
+                <span className={cn("text-xs font-bold text-right shrink-0 min-w-[2.5rem]", (match.home_elo_delta || 0) >= 0 ? "text-lime-400" : "text-red-500")}>
                   {(match.home_elo_delta || 0) > 0 ? '+' : ''}{match.home_elo_delta || 0}
                 </span>
               </div>
               {/* Score Grid (Lighter Background) */}
-              <div className="flex items-center justify-end gap-1.5 p-3 pr-4 bg-muted/20 w-[136px] shrink-0">
+              <div className="w-1/2 flex items-center justify-end gap-1.5 p-3 pr-4 bg-muted/20 min-w-0 shrink-0">
                 {match.home_set_scores.map((s, i) => {
                   const isWinner = s > match.away_set_scores[i]
                   return (
                     <div key={i} className={cn(
-                      "flex h-9 w-9 items-center justify-center rounded-md border font-mono text-[15px]",
+                      "flex h-9 w-9 items-center justify-center rounded-md border font-mono text-[15px] shrink-0",
                       isWinner 
                         ? "bg-lime-500/15 border-lime-400/30 text-lime-300 font-bold" 
                         : "bg-muted/40 border-border/60 text-muted-foreground font-medium"
@@ -287,9 +297,9 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
             </div>
 
             {/* Away Player Row */}
-            <div className="flex items-stretch">
+            <div className="flex items-stretch w-full">
               {/* Player Info (Darker Background) */}
-              <div className="flex-1 flex items-center gap-2.5 p-3 pl-3 bg-background/50">
+              <div className="w-1/2 flex items-center gap-2.5 p-3 pl-3 bg-background/50 min-w-0">
                 <div className="w-3 flex justify-center shrink-0">
                    {!homeWon && <svg className="h-3 w-3 text-lime-400 fill-current" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" /></svg>}
                 </div>
@@ -297,20 +307,22 @@ function MatchCard({ match, onViewProfile, onViewMatch, currentUserId }: { match
                   <AvatarImage src={match.away_player?.avatar_url} />
                   <AvatarFallback className="text-[10px]">{match.away_player?.name?.[0]}</AvatarFallback>
                 </Avatar>
-                <span className={cn("font-semibold text-sm truncate", !homeWon ? "text-foreground" : "text-muted-foreground")}>
-                  {match.away_player.name}
-                </span>
-                <span className={cn("ml-auto text-xs font-bold text-right shrink-0 min-w-[2.5rem]", (match.away_elo_delta || 0) >= 0 ? "text-lime-400" : "text-red-500")}>
+                <div className="flex flex-1 items-center min-w-0">
+                  <span className={cn("font-semibold text-sm truncate block", !homeWon ? "text-foreground" : "text-muted-foreground")}>
+                    {match.away_player.name}
+                  </span>
+                </div>
+                <span className={cn("text-xs font-bold text-right shrink-0 min-w-[2.5rem]", (match.away_elo_delta || 0) >= 0 ? "text-lime-400" : "text-red-500")}>
                   {(match.away_elo_delta || 0) > 0 ? '+' : ''}{match.away_elo_delta || 0}
                 </span>
               </div>
               {/* Score Grid (Lighter Background) */}
-              <div className="flex items-center justify-end gap-1.5 p-3 pr-4 bg-muted/20 w-[136px] shrink-0">
+              <div className="w-1/2 flex items-center justify-end gap-1.5 p-3 pr-4 bg-muted/20 min-w-0 shrink-0">
                 {match.away_set_scores.map((s, i) => {
                   const isWinner = s > match.home_set_scores[i]
                   return (
                     <div key={i} className={cn(
-                      "flex h-9 w-9 items-center justify-center rounded-md border font-mono text-[15px]",
+                      "flex h-9 w-9 items-center justify-center rounded-md border font-mono text-[15px] shrink-0",
                       isWinner 
                         ? "bg-lime-500/15 border-lime-400/30 text-lime-300 font-bold" 
                         : "bg-muted/40 border-border/60 text-muted-foreground font-medium"

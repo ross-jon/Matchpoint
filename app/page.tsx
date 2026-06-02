@@ -144,13 +144,15 @@ export default function MatchPointApp() {
 
       const { data, error } = await supabase
         .from('profiles')
-        .select('name')
+        .select('first_name, last_name, name')
         .eq('id', user.id)
         .single()
 
       if (!isMounted) return
 
-      const needsSetup = !!error || !data?.name?.trim()
+      const hasFirstName = !!data?.first_name?.trim()
+      const hasLastName = !!data?.last_name?.trim()
+      const needsSetup = !!error || !hasFirstName || !hasLastName
       if (needsSetup) {
         setActiveScreen('onboarding')
       }

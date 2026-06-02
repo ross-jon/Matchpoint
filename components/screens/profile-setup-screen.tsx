@@ -194,6 +194,7 @@ export function ProfileSetupScreen({ onComplete }: ProfileSetupScreenProps) {
 
       const { error } = await supabase.from('profiles').upsert({
         id: userId,
+        email: userData?.user?.email ?? null,
         first_name: firstName.trim(),
         last_name: lastName.trim(),
         name: displayName,

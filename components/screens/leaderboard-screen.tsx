@@ -125,42 +125,47 @@ export function LeaderboardScreen({ onViewProfile, onViewMatch }: LeaderboardScr
   return (
     <div className="min-h-screen pb-24 md:pb-8 bg-background">
       
-      {/* STICKY HEADER & COLUMNS */}
-      <header className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur-sm pt-4 pb-2 px-4 md:px-6 shadow-sm">
-        <div className="mx-auto max-w-4xl space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-              <h2 className="text-xl font-bold text-foreground tracking-tight">Leaderboard Rankings</h2>
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-widest mt-0.5">
-                Global Ladder ({playersData.length} Active)
-              </p>
-            </div>
-            
-            <div className="relative w-full sm:w-64 shrink-0">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Find a player..."
-                className="pl-9 h-10 bg-card/50 border-border/60 focus-visible:ring-lime-500/30 rounded-lg text-sm"
-              />
-            </div>
-          </div>
+      {/* FIXED FLOATING HEADER */}
+      <div className="fixed top-0 left-0 right-0 z-20 px-4 md:px-6 pt-4 pb-0 pointer-events-none">
+        <div className="mx-auto max-w-4xl pointer-events-auto">
+          <div className="rounded-t-2xl border border-b-0 border-border/70 bg-card/95 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.35)] px-5 md:px-6 py-4 space-y-3">
 
-          {/* Sticky Column Labels (Aligned with the thicker bands below) */}
-          <div className="flex items-center gap-4 md:gap-6 px-4 md:px-5 pr-5 pt-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-            <div className="w-10 text-center shrink-0">Rank</div>
-            <div className="w-10 text-center shrink-0">Trend</div>
-            <div className="hidden sm:block w-12 shrink-0"></div> {/* Avatar spacer */}
-            <div className="flex-1 min-w-0">Player</div>
-            <div className="hidden md:flex min-w-[150px] shrink-0 justify-end">Recent Form</div>
-            <div className="text-right shrink-0 min-w-[5rem] sm:min-w-[7rem]">Rating</div>
+            {/* Title row + search */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-black text-foreground tracking-tight leading-tight">Leaderboard</h2>
+                <p className="text-xs font-semibold text-muted-foreground/80 uppercase tracking-widest mt-0.5">
+                  Global Ladder · {playersData.length} Active
+                </p>
+              </div>
+              <div className="relative w-full sm:w-64 shrink-0">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Find a player…"
+                  className="pl-10 h-10 bg-background/60 border-border/60 focus-visible:ring-lime-500/30 rounded-xl text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Column labels — MUST match player row layout exactly */}
+            <div className="flex items-center gap-4 md:gap-6 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60 border-t border-border/40 pt-2.5">
+              <div className="w-12 text-center shrink-0">Rank</div>
+              <div className="w-12 text-center shrink-0">Trend</div>
+              <div className="hidden sm:block w-14 shrink-0" />
+              <div className="flex-1 min-w-0">Player</div>
+              {/* Form label centered over its 180px column */}
+              <div className="hidden md:flex w-[180px] shrink-0 justify-center">Form</div>
+              <div className="text-right shrink-0 w-24 sm:w-28">Rating</div>
+            </div>
+
           </div>
         </div>
-      </header>
+      </div>
 
-      {/* LEADERBOARD LIST */}
-      <main className="mx-auto max-w-4xl p-4 md:p-6 space-y-3">
+      {/* LEADERBOARD LIST — pt clears the fixed header, no extra gap */}
+      <main className="mx-auto max-w-4xl px-4 md:px-6 pb-6 pt-[148px] space-y-2">
         {loading ? (
           <div className="flex justify-center p-12">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -172,14 +177,13 @@ export function LeaderboardScreen({ onViewProfile, onViewMatch }: LeaderboardScr
         ) : (
           filteredPlayers.map((player) => {
             const isTop3 = player.currentRank <= 3
-            // Fallback for hot-reloading state safety
             const safeRecentForm = player.recentForm || []
 
             return (
               <div
                 key={player.id}
                 className={cn(
-                  "flex items-center gap-4 md:gap-6 p-4 md:p-5 pr-5 rounded-xl border transition-colors",
+                  "flex items-center gap-4 md:gap-6 px-5 md:px-6 py-4 md:py-5 rounded-xl border transition-colors",
                   isTop3 
                     ? "border-lime-400/40 bg-lime-500/10 shadow-sm" 
                     : "border-border/60 bg-card hover:bg-muted/30"
@@ -187,64 +191,63 @@ export function LeaderboardScreen({ onViewProfile, onViewMatch }: LeaderboardScr
               >
                 {/* 1. Rank */}
                 <div className={cn(
-                  "w-10 text-center font-black text-xl md:text-2xl shrink-0", 
-                  isTop3 ? "text-lime-400" : "text-muted-foreground"
+                  "w-12 text-center font-black text-2xl md:text-3xl shrink-0 tabular-nums", 
+                  isTop3 ? "text-lime-400" : "text-muted-foreground/70"
                 )}>
                   #{player.currentRank}
                 </div>
 
                 {/* 2. Trend */}
-                <div className="w-10 text-center text-xs font-bold shrink-0">
+                <div className="w-12 text-center text-sm font-bold shrink-0">
                   {player.trendDirection === 'up' && <span className="text-lime-400">↑{player.trendAmount}</span>}
-                  {player.trendDirection === 'down' && <span className="text-red-500">↓{player.trendAmount}</span>}
-                  {player.trendDirection === 'flat' && <span className="text-muted-foreground opacity-50">—</span>}
+                  {player.trendDirection === 'down' && <span className="text-red-400">↓{player.trendAmount}</span>}
+                  {player.trendDirection === 'flat' && <span className="text-muted-foreground/40">—</span>}
                 </div>
 
-                {/* 3. Avatar (Increased Size) */}
-                <Avatar className="h-12 w-12 shrink-0 border-2 border-background shadow-sm hidden sm:block">
+                {/* 3. Avatar */}
+                <Avatar className="h-14 w-14 shrink-0 border-2 border-background shadow-md hidden sm:block">
                   <AvatarImage src={player.avatar} alt={player.name} />
-                  <AvatarFallback className="text-sm bg-muted text-muted-foreground">{player.name[0]}</AvatarFallback>
+                  <AvatarFallback className="text-base bg-muted text-muted-foreground">{player.name[0]}</AvatarFallback>
                 </Avatar>
 
-                {/* 4. Name & Record (Increased text sizing & layout) */}
+                {/* 4. Name & Record */}
                 <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-3">
                   <button
                     onClick={() => onViewProfile(player.id)}
-                    className="text-left font-bold text-base md:text-xl text-foreground truncate hover:text-lime-300 transition-colors"
+                    className="text-left font-bold text-lg md:text-2xl text-foreground truncate hover:text-lime-300 transition-colors"
                   >
                     {player.name}
                   </button>
-                  <span className="text-sm font-bold text-muted-foreground shrink-0 uppercase tracking-widest">
-                    ({player.wins}-{player.losses})
+                  <span className="text-sm font-bold text-muted-foreground/70 shrink-0 uppercase tracking-widest">
+                    ({player.wins}–{player.losses})
                   </span>
                 </div>
 
-                {/* 5. Clickable Recent Form Guide */}
-                <div className="hidden md:flex items-center justify-end gap-2 min-w-[150px] shrink-0">
+                {/* 5. Recent Form — centered in its fixed-width column */}
+                <div className="hidden md:flex items-center justify-center gap-1.5 w-[180px] shrink-0">
                   {safeRecentForm.map((item, i) => (
                     <button 
                       key={i}
                       onClick={() => onViewMatch?.(item.matchId)}
                       title="View Match Details"
                       className={cn(
-                        "flex items-center justify-center h-6 min-w-[28px] px-1.5 rounded text-[10px] font-bold font-mono transition-transform hover:scale-110 hover:brightness-125 cursor-pointer",
+                        "flex items-center justify-center h-7 min-w-[34px] px-1.5 rounded text-xs font-bold font-mono transition-transform hover:scale-110 hover:brightness-125 cursor-pointer",
                         item.delta >= 0 
-                          ? "bg-lime-500/15 text-lime-400 border border-lime-400/30" 
-                          : "bg-red-500/10 text-red-500 border border-red-500/20"
+                          ? "bg-lime-500/20 text-lime-300 border border-lime-400/40" 
+                          : "bg-red-500/15 text-red-400 border border-red-500/30"
                       )}
                     >
                       {item.delta > 0 ? '+' : ''}{item.delta}
                     </button>
                   ))}
-                  {/* Fill empty spots safely */}
                   {Array.from({ length: Math.max(0, 5 - safeRecentForm.length) }).map((_, i) => (
-                    <div key={`empty-${i}`} className="h-6 w-[28px] rounded border border-border/40 bg-muted/10 pointer-events-none" />
+                    <div key={`empty-${i}`} className="h-7 w-[34px] rounded border border-border/30 bg-muted/10 pointer-events-none" />
                   ))}
                 </div>
 
-                {/* 6. Rating (Increased Size) */}
-                <div className="text-right shrink-0 min-w-[5rem] sm:min-w-[7rem]">
-                  <span className="text-2xl md:text-3xl font-black text-foreground tracking-tighter">{player.elo}</span>
+                {/* 6. Rating */}
+                <div className="text-right shrink-0 w-24 sm:w-28">
+                  <span className="text-3xl md:text-4xl font-black text-foreground tracking-tighter tabular-nums">{player.elo}</span>
                 </div>
               </div>
             )
